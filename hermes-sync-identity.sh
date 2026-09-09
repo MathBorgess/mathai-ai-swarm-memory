@@ -4,10 +4,11 @@ REPO_SLUG="${HERMES_IDENTITY_REPO:-MathBorgess/hermes-identity}"
 CLONE_DIR="${HERMES_IDENTITY_DIR:-$HOME/src/hermes-identity}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 CMD="${1:-pull}"
+IDENTITY_DIR="$CLONE_DIR/src/hermes-identity"
 need() { command -v "$1" >/dev/null || { echo "missing: $1" >&2; exit 1; }; }
 need git
 ensure_clone() {
-  if [[ ! -d "$CLONE_DIR/.git" ]]; then
+  if [[ ! -e "$CLONE_DIR/.git" ]]; then
     mkdir -p "$(dirname "$CLONE_DIR")"
     if command -v gh >/dev/null; then
       gh repo clone "$REPO_SLUG" "$CLONE_DIR"
@@ -32,10 +33,10 @@ link_one() {
   echo "linked $link → $target"
 }
 do_link() {
-  mkdir -p "$HERMES_HOME/memories" "$CLONE_DIR/memories"
-  link_one "$CLONE_DIR/SOUL.md" "$HERMES_HOME/SOUL.md"
-  link_one "$CLONE_DIR/memories/MEMORY.md" "$HERMES_HOME/memories/MEMORY.md"
-  link_one "$CLONE_DIR/memories/USER.md" "$HERMES_HOME/memories/USER.md"
+  mkdir -p "$HERMES_HOME/memories" "$IDENTITY_DIR/memories"
+  link_one "$IDENTITY_DIR/SOUL.md" "$HERMES_HOME/SOUL.md"
+  link_one "$IDENTITY_DIR/memories/MEMORY.md" "$HERMES_HOME/memories/MEMORY.md"
+  link_one "$IDENTITY_DIR/memories/USER.md" "$HERMES_HOME/memories/USER.md"
 }
 case "$CMD" in
   pull)
@@ -47,7 +48,7 @@ case "$CMD" in
   push)
     ensure_clone
     do_link
-    git -C "$CLONE_DIR" add SOUL.md memories/MEMORY.md memories/USER.md
+    git -C "$CLONE_DIR" add src/hermes-identity/SOUL.md src/hermes-identity/memories/MEMORY.md src/hermes-identity/memories/USER.md
     if git -C "$CLONE_DIR" diff --cached --quiet; then
       echo "nothing to push"; exit 0
     fi

@@ -1,63 +1,47 @@
-# AGENTS — hermes-identity
+# AGENTS — mathai-context-engine
 
-## Purpose
-Keep Hermes persona + memory identical across machines without syncing sessions or secrets.
+## Propósito
 
-## Rules
-1. Only edit/commit: `SOUL.md`, `memories/MEMORY.md`, `memories/USER.md`.
-2. Never commit `~/.hermes/.env`, `auth.json`, session DBs, cache, or API keys.
-3. On each machine, identity files are symlinks into a local clone of this repo.
-4. After Hermes rewrites MEMORY/USER, run `hermes-sync-identity.sh push` before switching machines.
-5. Before starting Hermes on a cold machine, run `hermes-sync-identity.sh pull`.
+Manter uma camada de contexto privada e revisável para agentes do dono. O repositório contém a identidade Hermes e o contrato do futuro broker de pareamento; o conhecimento compilado pertence ao `mathai-wiki`.
 
-## Layout
-```
-~/src/hermes-identity/          # git clone
-~/.hermes/SOUL.md               → ~/src/hermes-identity/SOUL.md
-~/.hermes/memories/MEMORY.md    → ~/src/hermes-identity/memories/MEMORY.md
-~/.hermes/memories/USER.md      → ~/src/hermes-identity/memories/USER.md
-```
+## Orientação obrigatória
 
-## Autenticar novo agente (A2A → ailla-hermes)
+Leia nesta ordem: `CLAUDE.md` → `wiki/index.md` → ADR ou roadmap aplicável → README do componente. Não presuma que uma credencial, uma sessão MCP ou um arquivo privado prove identidade para um serviço remoto.
 
-Onboarding de um peer ao Hermes A2A na box da Ailla. **Zero secrets neste repo** — tokens só em `~/.hermes/.env` de cada máquina / canal privado.
+## Limites de escrita
 
-Hostname estável: `https://a2a.mathai.com.br` (Agent Card `ailla-hermes`).
+- `src/hermes-identity/`: apenas identidade sincronizável e seu setup.
+- `src/auth-broker/`: protocolo, implementação e testes do broker.
+- `wiki/`: decisões e operação deste repositório, sem segredos.
+- `docs/`: planos de implementação, não estado operacional vivo.
 
-### Na box (servidor) — Ailla / dono
+## Segurança inegociável
 
-1. Em `~/.hermes/.env` (nunca neste repo):
-   - `A2A_PUBLIC_URL=https://a2a.mathai.com.br`
-   - `A2A_PEER_TOKENS=nome:token,…` (um token por peer; preferido)
-   - opcional: `A2A_TRUSTED_PEERS=nome1,nome2`
-2. Novo peer: `openssl rand -base64 24` → acrescenta `nome:<token>` em `A2A_PEER_TOKENS` → reinicia `hermes gateway run`.
-3. Entrega o token **só** por DM / password manager (não Linear, não PR, não SOUL/USER).
+1. Nunca comitar `.env`, `auth.json`, tokens A2A, token de tunnel, cookies, sessões, cache, chaves privadas ou SQLite real.
+2. O broker guarda chaves públicas, hashes de desafios, estados de pareamento e auditoria. Segredos de assinatura e o bearer privado broker→Hermes ficam somente no ambiente da VPS.
+3. MCP autenticado é capacidade local do agente; não é uma credencial que pode ser encaminhada ao broker.
+4. O broker termina a autenticação do agente e usa outra credencial para chamar Hermes. Nunca encaminhe o token apresentado pelo agente.
+5. A aprovação do dono ocorre em uma UI protegida; v0.0.1 não aceita autoaprovação nem convidados de terceiros.
 
-### No peer (cliente)
+## Compatibilidade Hermes
 
-```yaml
-a2a_agents:
-  ailla-hermes:
-    url: "https://a2a.mathai.com.br"
-    auth: { type: bearer, token: "PEER_TOKEN_ENTREGUE_FORA_DESTE_FICHEIRO" }
-    timeout: 120
-```
-
-Ferramentas: `a2a_discover`, `a2a_call`, `a2a_list`, `a2a_history`, `a2a_orchestrate`.
-
-### Smoke
+Os arquivos canônicos vivem em `src/hermes-identity/`. Os caminhos raiz `SOUL.md` e `memories/*` são links de compatibilidade para instalações existentes. Em cada máquina:
 
 ```bash
-curl -sS https://a2a.mathai.com.br/.well-known/agent-card.json
-# expect 200, name ailla-hermes, url https://a2a.mathai.com.br/
-# pedidos A2A autenticados: Authorization: Bearer <PEER_TOKEN>
+./hermes-sync-identity.sh pull
+./hermes-sync-identity.sh link
 ```
 
-### Anti-padrões
+Após Hermes alterar memória, rode `./hermes-sync-identity.sh push`. Antes de iniciar Hermes numa máquina fria, rode `pull`.
 
-- Tokens no vault / Linear / este repo
-- URL `*.trycloudflare.com` como estável
-- Tunnel Cloudflare numa conta diferente da zona DNS (erro 1033)
-- Dois pollers Telegram no mesmo bot
-- A2A remoto sem bearer
+## A2A atual e destino
 
+`https://a2a.mathai.com.br` continua sendo o gateway Hermes. O broker terá hostname próprio, proposto como `pair.a2a.mathai.com.br`; ele não expõe o bearer estático do gateway e não amplia a superfície pública do card Hermes.
+
+## Verificação mínima
+
+```bash
+bash tests/test-hermes-identity-sync.sh
+```
+
+Quando o broker existir, testes de protocolo e migração SQLite são obrigatórios antes de qualquer deploy. Não crie workflow GitHub para a descoberta ou o pareamento: leitura via API/MCP não deve consumir GitHub Actions.
