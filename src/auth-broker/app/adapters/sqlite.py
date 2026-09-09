@@ -57,10 +57,33 @@ class SqlitePairingStore:
                 expires_at TEXT NOT NULL,
                 revoked_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL CHECK(event_type IN (
+                    'request_created', 'proof_verified', 'agent_approved', 'agent_revoked'
+                )),
+                occurred_at TEXT NOT NULL,
+                request_id TEXT NOT NULL REFERENCES pairing_requests(id),
+                agent_id TEXT REFERENCES agents(id)
+            );
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+                BEFORE UPDATE ON audit_events
+                BEGIN SELECT RAISE(ABORT, 'Audit events are append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+                BEFORE DELETE ON audit_events
+                BEGIN SELECT RAISE(ABORT, 'Audit events are append-only'); END;
         """)
 
     def close(self) -> None:
         self.connection.close()
+
+    def _audit(self, event_type: str, at: datetime, request_id: str, agent_id: str | None = None) -> None:
+        """Append only identifiers and metadata inside the caller's transaction."""
+        _aware(at)
+        self.connection.execute(
+            "INSERT INTO audit_events VALUES (?, ?, ?, ?, ?)",
+            (secrets.token_urlsafe(32), event_type, at.isoformat(), request_id, agent_id),
+        )
 
     def create(self, request: PairingRequest) -> None:
         if request.status != "pending":
@@ -73,6 +96,7 @@ class SqlitePairingStore:
                 (request.id, request.public_key, hashlib.sha256(request.challenge).hexdigest(),
                  request.created_at.isoformat(), request.expires_at.isoformat()),
             )
+            self._audit("request_created", request.created_at, request.id)
 
     def _request(self, request_id: str, at: datetime) -> sqlite3.Row:
         _aware(at)
@@ -104,6 +128,7 @@ class SqlitePairingStore:
             self.connection.execute(
                 "UPDATE pairing_requests SET status = 'proof_verified' WHERE id = ?", (request_id,)
             )
+            self._audit("proof_verified", now, request_id)
 
     def approve(self, request_id: str, at: datetime, expires_at: datetime) -> ActiveAgent:
         """Record explicit owner approval with a caller-selected agent lifetime."""
@@ -124,6 +149,7 @@ class SqlitePairingStore:
             self.connection.execute(
                 "UPDATE pairing_requests SET status = 'approved' WHERE id = ?", (request_id,)
             )
+            self._audit("agent_approved", at, request_id, agent.id)
         return agent
 
     def active_agent(self, agent_id: str, now: datetime | None = None) -> ActiveAgent | None:
@@ -143,7 +169,12 @@ class SqlitePairingStore:
     def revoke(self, agent_id: str, at: datetime) -> None:
         _aware(at)
         with self.connection:
-            self.connection.execute(
+            changed = self.connection.execute(
                 "UPDATE agents SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
                 (at.isoformat(), agent_id),
             )
+            if changed.rowcount:
+                row = self.connection.execute(
+                    "SELECT request_id FROM agents WHERE id = ?", (agent_id,)
+                ).fetchone()
+                self._audit("agent_revoked", at, row["request_id"], agent_id)
