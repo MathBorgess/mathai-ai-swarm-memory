@@ -282,3 +282,14 @@ def test_bad_payloads_are_bounded_and_not_reflected(broker):
     response = client.post("/v1/pairing-requests", json={"public_key": "sensitive-input-only"})
     assert response.status_code == 400
     assert "sensitive-input-only" not in response.text
+
+
+def test_deep_json_is_a_controlled_client_error(broker):
+    client, hermes, _, _ = broker
+    body = b'{"public_key":' + b'[' * 2000 + b'"sensitive-nested-input"' + b']' * 2000 + b'}'
+    assert len(body) < 16384
+    response = client.post("/v1/pairing-requests", content=body,
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 400
+    assert "sensitive-nested-input" not in response.text
+    assert not hermes.queries

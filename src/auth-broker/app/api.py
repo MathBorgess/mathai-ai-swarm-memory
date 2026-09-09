@@ -36,7 +36,10 @@ def _object(raw: bytes) -> dict:
                 raise ValueError("Duplicate JSON field")
             result[key] = value
         return result
-    value = json.loads(raw, object_pairs_hook=unique)
+    try:
+        value = json.loads(raw, object_pairs_hook=unique)
+    except RecursionError:
+        raise HTTPException(400, "Invalid JSON") from None
     if not isinstance(value, dict):
         raise ValueError("Expected JSON object")
     return value

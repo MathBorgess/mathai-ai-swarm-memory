@@ -1,0 +1,82 @@
+import importlib
+import sys
+from datetime import datetime, timedelta, timezone
+
+import httpx
+import jwt
+import pytest
+from fastapi.testclient import TestClient
+
+from test_api import owner_keys, pair, signed
+
+
+@pytest.fixture
+def configured(monkeypatch, tmp_path):
+    values = {
+        "AUTH_BROKER_DATABASE_PATH": str(tmp_path / "production.sqlite3"),
+        "AUTH_BROKER_AUDIENCE": "https://pair.example.test",
+        "AUTH_BROKER_CF_ACCESS_ISSUER": "https://team.cloudflareaccess.com",
+        "AUTH_BROKER_CF_ACCESS_AUDIENCE": "access-app",
+        "AUTH_BROKER_OWNER_EMAIL": "owner@example.test",
+        "HERMES_A2A_URL": "https://hermes.example.test/",
+        "HERMES_BROKER_TOKEN": "synthetic-server-only",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    sys.modules.pop("app.main", None)
+    yield values
+    sys.modules.pop("app.main", None)
+
+
+@pytest.mark.parametrize("name", [
+    "AUTH_BROKER_DATABASE_PATH", "AUTH_BROKER_AUDIENCE",
+    "AUTH_BROKER_CF_ACCESS_ISSUER", "AUTH_BROKER_CF_ACCESS_AUDIENCE",
+    "AUTH_BROKER_OWNER_EMAIL", "HERMES_A2A_URL", "HERMES_BROKER_TOKEN",
+])
+@pytest.mark.parametrize("value", [None, "", " \t"])
+def test_required_environment_fails_closed(configured, monkeypatch, name, value):
+    if value is None:
+        monkeypatch.delenv(name)
+    else:
+        monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError, match=name):
+        importlib.import_module("app.main")
+
+
+def test_production_composition_verifies_owner_and_uses_private_bearer(configured, monkeypatch, owner_keys):
+    private, jwk = owner_keys
+    monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", lambda self: {"keys": [jwk]})
+    captured = []
+    def handle(self, request):
+        import json
+        captured.append(request)
+        payload = json.loads(request.content)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": {"ok": True}})
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle)
+    main = importlib.import_module("app.main")
+    now = datetime.now(timezone.utc)
+    claims = {"iss": "https://team.cloudflareaccess.com", "aud": "access-app",
+              "email": "owner@example.test", "sub": "owner", "iat": now,
+              "exp": now + timedelta(minutes=5)}
+    with TestClient(main.app) as client:
+        key, request_id = pair(client, approve=False)
+        endpoint = f"/v1/pairing-requests/{request_id}/approve"
+        assert client.post(endpoint, json={}, headers={"Cf-Access-Jwt-Assertion": "test-owner-assertion"}).status_code == 403
+        token = jwt.encode(claims, private, algorithm="RS256", headers={"kid": "test-key"})
+        approved = client.post(endpoint, json={}, headers={"Cf-Access-Jwt-Assertion": token})
+        assert approved.status_code == 200
+        body, headers = signed(key, approved.json()["agent_id"], timestamp=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        headers["Authorization"] = "Bearer synthetic-caller-only"
+        assert client.post("/v1/context/query", content=body, headers=headers).json() == {"ok": True}
+    assert len(captured) == 1
+    assert str(captured[0].url) == "https://hermes.example.test/"
+    assert captured[0].headers["Authorization"] == "Bearer synthetic-server-only"
+    with pytest.raises(TypeError):
+        main.build_app_from_environment(hermes=object())
+
+
+def test_factory_rechecks_environment(configured, monkeypatch):
+    main = importlib.import_module("app.main")
+    monkeypatch.delenv("HERMES_BROKER_TOKEN")
+    with pytest.raises(RuntimeError, match="HERMES_BROKER_TOKEN"):
+        main.build_app_from_environment()
