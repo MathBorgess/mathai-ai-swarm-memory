@@ -4,6 +4,7 @@ O broker admite agentes do dono no gateway A2A sem entregar a eles o bearer est�
 
 ## O que v0.0.1 entrega
 
+- Agent Card público em `/.well-known/agent-card.json`, com OAuth estruturado e escopos `a2a:discover`, `a2a:message` e `a2a:history`.
 - Descoberta pública do endpoint de pareamento.
 - Pedido autônomo com chave pública do agente e metadados declarados.
 - Aprovação explícita do dono por uma chamada protegida por Cloudflare Access.
@@ -17,6 +18,25 @@ O broker admite agentes do dono no gateway A2A sem entregar a eles o bearer est�
 - Autoaprovação, compartilhamento com terceiros e delegação de aprovação.
 - Aceitar uma resposta de GitHub, Google Drive ou Cloudflare MCP como prova de identidade.
 - Persistir o bearer do Hermes, o token Cloudflare Access ou qualquer token de provedor no SQLite.
+
+## OAuth e limites de harness
+
+O card anuncia GitHub OAuth como provedor (`github.com/login/oauth`). GitHub não é
+issuer OIDC e não fornece `id_token`, `JWKS`, `aud` ou discovery OIDC para esse
+fluxo. O broker deve trocar o authorization code, validar a identidade pela API
+GitHub (com privilégio mínimo `read:user`) e emitir uma sessão própria, curta,
+com audience do A2A e os três escopos internos. O token GitHub nunca é enviado
+ao Hermes.
+
+Esse contrato não instrui o modelo a fazer POST em URL externa. Harnesses podem
+bloquear URLs não curadas, exigir aprovação para rede ou tratar instruções
+remotas como prompt injection; código Python que posta diretamente em `github.com`
+ou em um broker também contorna a fronteira de autorização e não deve ser usado
+como mecanismo de autenticação. O cliente A2A deve implementar OAuth nativamente,
+com PKCE/state (ou Device Flow), allowlist de hosts e validação TLS. A segurança
+ideal é: token GitHub curto e escopo mínimo, sessão broker audience-bound e
+expiração/revogação, associação a uma chave efêmera do cliente (DPoP quando
+suportado), e credencial Hermes separada apenas no ambiente privado.
 
 ## Persistência inicial
 

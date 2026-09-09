@@ -25,6 +25,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from app.adapters.hermes import HermesClient, HermesError
 from app.adapters.owner import OwnerAssertionVerifier, OwnerAuthenticationError
 from app.adapters.sqlite import SqlitePairingStore
+from app.agent_card import build_agent_card
 from app.domain.pairing import create_request
 
 
@@ -59,10 +60,15 @@ async def _body(request: Request) -> bytes:
 def create_app(*, database_path: str | Path, audience: str,
                owner_verifier: OwnerAssertionVerifier, hermes: HermesClient,
                clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-               agent_lifetime: timedelta = timedelta(hours=1)) -> FastAPI:
+               agent_lifetime: timedelta = timedelta(hours=1),
+               public_url: str = "https://a2a.mathai.com.br") -> FastAPI:
     if not audience or not timedelta(0) < agent_lifetime <= timedelta(hours=1):
         raise ValueError("Audience and agent lifetime of at most one hour are required")
     app = FastAPI(title="Agent Pairing Broker", version="0.0.1")
+
+    @app.get("/.well-known/agent-card.json")
+    def agent_card():
+        return build_agent_card(public_url)
 
     @app.post("/v1/pairing-requests", status_code=201)
     def new_pairing(body: bytes = Depends(_body)):
