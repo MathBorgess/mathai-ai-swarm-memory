@@ -26,7 +26,7 @@
 
 ## Entrega 3 — borda e aprovação do dono
 
-- [ ] Configurar o hostname `pair.a2a.mathai.com.br` no Tunnel Cloudflare da conta da zona.
+- [ ] Configurar o hostname `auth-broker.mathai.com.br` no Tunnel Cloudflare da conta da zona (trocado de `pair.a2a.mathai.com.br`; ver [[wiki/architecture/0002-auth-broker-hostname-cert-scope]]).
 - [ ] Proteger a UI de aprovação com Cloudflare Access e validar o JWT no broker.
 - [ ] Configurar política que aceite somente a identidade do dono.
 

@@ -5,6 +5,7 @@ Documentação mínima para agentes que precisam entender o repositório sem dep
 ## Arquitetura
 
 - [[wiki/architecture/0001-agent-pairing-broker-v001]] — decisão de v0.0.1: aprovação do dono, chave por agente, SQLite na VPS e proxy com credenciais separadas.
+- [[wiki/architecture/0002-auth-broker-hostname-cert-scope]] — amenda: hostname do broker trocado para `auth-broker.mathai.com.br` (Universal SSL não cobre wildcard de dois níveis).
 
 ## Roadmap
 
@@ -17,4 +18,4 @@ Documentação mínima para agentes que precisam entender o repositório sem dep
 
 ## Operação
 
-- [[docs/operations/install-auth-broker-vps]] — instalação proposta na VPS, hostname `pair.a2a.mathai.com.br` e limite da política Cloudflare Access.
+- [[docs/operations/install-auth-broker-vps]] — instalação proposta na VPS, hostname `auth-broker.mathai.com.br` (trocado de `pair.a2a.mathai.com.br` por escopo de certificado, ver [[wiki/architecture/0002-auth-broker-hostname-cert-scope]]) e limite da política Cloudflare Access.

@@ -2,7 +2,7 @@
 
 Este guia prepara o **Agent Pairing Broker v0.0.1** na VPS que já expõe Hermes em `a2a.mathai.com.br`. Ele não faz deploy automaticamente e não autoriza a alterar a conta Cloudflare ou o gateway existente sem revisão humana.
 
-O hostname planejado do broker é **`pair.a2a.mathai.com.br`**. Ele aponta pelo mesmo Named Tunnel e pela mesma zona DNS que já atendem `a2a.mathai.com.br`, mas com origem local própria: `http://127.0.0.1:9910`.
+O hostname do broker é **`auth-broker.mathai.com.br`** (trocado de `pair.a2a.mathai.com.br`; ver [[wiki/architecture/0002-auth-broker-hostname-cert-scope]] — Universal SSL não cobre subdomínio de dois níveis). Ele aponta pelo mesmo Named Tunnel e pela mesma zona DNS que já atendem `a2a.mathai.com.br`, mas com origem local própria: `http://127.0.0.1:9910`.
 
 ## Limites de segurança
 
@@ -28,7 +28,7 @@ Crie `/home/box/.mathai-context-engine/auth-broker.env` com modo `600`. Não ver
 
 ```dotenv
 AUTH_BROKER_DATABASE_PATH=/home/box/.mathai-context-engine/auth-broker.sqlite3
-AUTH_BROKER_AUDIENCE=https://pair.a2a.mathai.com.br
+AUTH_BROKER_AUDIENCE=https://auth-broker.mathai.com.br
 AUTH_BROKER_CF_ACCESS_ISSUER=https://<team-name>.cloudflareaccess.com
 AUTH_BROKER_CF_ACCESS_AUDIENCE=<access-application-aud-tag>
 AUTH_BROKER_OWNER_EMAIL=<email-do-dono-no-idp>
@@ -86,7 +86,7 @@ Na **mesma conta Cloudflare que controla a zona `mathai.com.br` e o Named Tunnel
 
 | Campo | Valor |
 | --- | --- |
-| Hostname | `pair.a2a.mathai.com.br` |
+| Hostname | `auth-broker.mathai.com.br` |
 | Service | `http://127.0.0.1:9910` |
 | Tunnel | o mesmo Named Tunnel já usado por `a2a.mathai.com.br` |
 
@@ -94,7 +94,7 @@ A criação do Public Hostname mantém o CNAME gerenciado pelo Tunnel. Não crie
 
 ## 6. Proteger somente a aprovação do dono com Cloudflare Access
 
-Crie uma aplicação **Self-hosted** no Cloudflare Access para o hostname `pair.a2a.mathai.com.br`, limitada ao caminho de aprovação:
+Crie uma aplicação **Self-hosted** no Cloudflare Access para o hostname `auth-broker.mathai.com.br`, limitada ao caminho de aprovação:
 
 ```text
 /v1/pairing-requests/<request-id>/approve
@@ -113,7 +113,7 @@ Não use Service Token, header de e-mail ou um token MCP como substituto dessa a
 Depois do Tunnel publicar o hostname, confirme que a rota pública chega ao aplicativo sem criar um pedido:
 
 ```bash
-curl -i -X POST https://pair.a2a.mathai.com.br/v1/pairing-requests \
+curl -i -X POST https://auth-broker.mathai.com.br/v1/pairing-requests \
   -H 'content-type: application/json' \
   --data '{}'
 ```

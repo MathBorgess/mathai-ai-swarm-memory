@@ -36,7 +36,7 @@ Após Hermes alterar memória, rode `./hermes-sync-identity.sh push`. Antes de i
 
 ## A2A atual e destino
 
-`https://a2a.mathai.com.br` continua sendo o gateway Hermes. O broker terá hostname próprio, proposto como `pair.a2a.mathai.com.br`; ele não expõe o bearer estático do gateway e não amplia a superfície pública do card Hermes.
+`https://a2a.mathai.com.br` continua sendo o gateway Hermes. O broker tem hostname próprio, `auth-broker.mathai.com.br` (trocado de `pair.a2a.mathai.com.br`, ver [[wiki/architecture/0002-auth-broker-hostname-cert-scope]]); ele não expõe o bearer estático do gateway e não amplia a superfície pública do card Hermes.
 
 ## Verificação mínima
 
