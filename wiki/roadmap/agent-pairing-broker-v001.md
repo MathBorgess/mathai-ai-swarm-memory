@@ -26,11 +26,12 @@
 
 ## Entrega 3 — borda e aprovação do dono
 
-- [ ] Configurar o hostname `auth-broker.mathai.com.br` no Tunnel Cloudflare da conta da zona (trocado de `pair.a2a.mathai.com.br`; ver [[wiki/architecture/0002-auth-broker-hostname-cert-scope]]).
-- [ ] Proteger a UI de aprovação com Cloudflare Access e validar o JWT no broker.
-- [ ] Configurar política que aceite somente a identidade do dono.
+- [x] Configurar o hostname `auth-broker.mathai.com.br` no Tunnel Cloudflare da conta da zona (trocado de `pair.a2a.mathai.com.br`; ver [[wiki/architecture/0002-auth-broker-hostname-cert-scope]]).
+- [x] Proteger a UI de aprovação com Cloudflare Access e validar o JWT no broker.
+- [x] Configurar política que aceite somente a identidade do dono.
+- [x] Descoberta do endpoint de pareamento pelo Agent Card do Hermes A2A, sem intervenção humana ([[wiki/architecture/0003-agent-card-discovery-instructions]]).
 
-**Saída:** pedido remoto fica pendente; sem login do dono, nenhuma aprovação é possível.
+**Saída:** pedido remoto fica pendente; sem login do dono, nenhuma aprovação é possível. Um agente que só lê o Agent Card público consegue localizar o broker e iniciar o pedido sozinho.
 
 ## Entrega 4 — integração Hermes
 
@@ -47,4 +48,6 @@ V0.1 só abre após a primeira operação estável registrar pares, revogações
 ## Relações
 
 - [[wiki/architecture/0001-agent-pairing-broker-v001]]
+- [[wiki/architecture/0002-auth-broker-hostname-cert-scope]]
+- [[wiki/architecture/0003-agent-card-discovery-instructions]]
 - [[src/auth-broker/README]]
