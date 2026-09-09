@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-pairing-broker"
+version = "0.0.1"
+requires-python = ">=3.12"
+dependencies = ["cryptography>=42", "fastapi>=0.111,<1", "httpx>=0.27,<1", "PyJWT[crypto]>=2.10,<3", "uvicorn>=0.30,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
