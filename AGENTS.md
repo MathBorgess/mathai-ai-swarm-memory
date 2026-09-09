@@ -13,7 +13,7 @@ Leia nesta ordem: `CLAUDE.md` → `wiki/index.md` → ADR ou roadmap aplicável 
 - `src/hermes-identity/`: apenas identidade sincronizável e seu setup.
 - `src/auth-broker/`: protocolo, implementação e testes do broker.
 - `wiki/`: decisões e operação deste repositório, sem segredos.
-- `docs/`: planos de implementação, não estado operacional vivo.
+- `docs/`: planos e guias operacionais sem segredos; não é estado operacional vivo.
 
 ## Segurança inegociável
 
@@ -21,7 +21,7 @@ Leia nesta ordem: `CLAUDE.md` → `wiki/index.md` → ADR ou roadmap aplicável 
 2. O broker guarda chaves públicas, hashes de desafios, estados de pareamento e auditoria. Segredos de assinatura e o bearer privado broker→Hermes ficam somente no ambiente da VPS.
 3. MCP autenticado é capacidade local do agente; não é uma credencial que pode ser encaminhada ao broker.
 4. O broker termina a autenticação do agente e usa outra credencial para chamar Hermes. Nunca encaminhe o token apresentado pelo agente.
-5. A aprovação do dono ocorre em uma UI protegida; v0.0.1 não aceita autoaprovação nem convidados de terceiros.
+5. A aprovação do dono usa a rota de aprovação protegida por Cloudflare Access; v0.0.1 não aceita autoaprovação nem convidados de terceiros.
 
 ## Compatibilidade Hermes
 
@@ -44,4 +44,4 @@ Após Hermes alterar memória, rode `./hermes-sync-identity.sh push`. Antes de i
 bash tests/test-hermes-identity-sync.sh
 ```
 
-Quando o broker existir, testes de protocolo e migração SQLite são obrigatórios antes de qualquer deploy. Não crie workflow GitHub para a descoberta ou o pareamento: leitura via API/MCP não deve consumir GitHub Actions.
+Testes de protocolo e migração SQLite são obrigatórios antes de qualquer deploy. Não crie workflow GitHub para a descoberta ou o pareamento: leitura via API/MCP não deve consumir GitHub Actions.

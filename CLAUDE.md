@@ -19,7 +19,7 @@ Uma base privada para a context engine do dono. Ela separa três responsabilidad
 
 ## Modelo de confiança v0.0.1
 
-Um agente pode descobrir o endpoint e abrir um pedido sozinho. Ele não pode se admitir. O dono, autenticado na UI de aprovação, confirma a chave pública apresentada pelo agente. O broker emite uma credencial curta vinculada a essa chave e usa uma credencial distinta, local à VPS, para conversar com Hermes.
+Um agente pode descobrir o endpoint e abrir um pedido sozinho. Ele não pode se admitir. O dono, autenticado via Cloudflare Access na rota de aprovação, confirma a chave pública apresentada pelo agente. O broker mantém a admissão curta vinculada a essa chave e usa uma credencial distinta, local à VPS, para conversar com Hermes.
 
 Isso resolve o problema de tokens A2A fixos sem fingir que a sessão GitHub, Drive ou Cloudflare de um agente é uma identidade exportável.
 
@@ -33,4 +33,4 @@ O clone ainda pode permanecer em `~/src/hermes-identity` durante a transição. 
 bash tests/test-hermes-identity-sync.sh
 ```
 
-Não há banco versionado nem serviço iniciado neste estágio. SQLite será criado pela aplicação do broker na VPS, fora do Git, quando a implementação começar.
+Não há banco versionado nem serviço iniciado neste clone. SQLite é criado pela aplicação do broker na VPS, fora do Git, durante a instalação descrita em `docs/operations/install-auth-broker-vps.md`.

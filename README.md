@@ -19,7 +19,7 @@ docs/                 plano de implementação executável
 
 ## Estado atual
 
-O sync de identidade funciona. O broker ainda não é um serviço executável: v0.0.1 foi delimitada, mas só começa após o plano, a revisão da ADR e a escolha da configuração Cloudflare Access.
+O sync de identidade funciona. O broker v0.0.1 já tem implementação e testes locais; a instalação na VPS e a configuração Cloudflare Access ainda são uma operação explícita, não uma consequência de dar merge. Siga o [[docs/operations/install-auth-broker-vps]] para preparar esse ambiente.
 
 O remoto GitHub é `MathBorgess/mathai-context-engine`. Clones e links locais podem manter o diretório `~/src/hermes-identity`; o bootstrap aponta ao novo remoto e os URLs antigos do GitHub permanecem redirecionados durante a transição.
 

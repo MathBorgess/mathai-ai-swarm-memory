@@ -161,8 +161,78 @@ git add src/auth-broker
 git commit -m "feat: enforce approved pairing at HTTP boundary"
 ```
 
+### Task 4: Production composition and hostile JSON handling
+
+**Files:**
+- Create: `src/auth-broker/app/main.py`
+- Create: `src/auth-broker/tests/test_main.py`
+- Modify: `src/auth-broker/app/api.py`
+- Modify: `src/auth-broker/tests/test_api.py`
+
+**Interfaces:**
+- Produces: `app.main:app`, the Uvicorn application factory composed from environment configuration.
+- Consumes: `AUTH_BROKER_DATABASE_PATH`, `AUTH_BROKER_AUDIENCE`, `AUTH_BROKER_CF_ACCESS_ISSUER`, `AUTH_BROKER_CF_ACCESS_AUDIENCE`, `AUTH_BROKER_OWNER_EMAIL`, `HERMES_A2A_URL`, `HERMES_BROKER_TOKEN`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_missing_hermes_broker_token_fails_at_startup(monkeypatch):
+    monkeypatch.delenv("HERMES_BROKER_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="HERMES_BROKER_TOKEN"):
+        build_app_from_environment()
+
+def test_deep_json_is_a_controlled_client_error(client):
+    response = client.post("/v1/pairing-requests", content=deep_json, headers={"content-type": "application/json"})
+    assert response.status_code == 400
+```
+
+- [ ] **Step 2: Run tests and verify expected failures**
+
+Run: `pytest src/auth-broker/tests/test_main.py src/auth-broker/tests/test_api.py -q`
+
+Expected: FAIL because `build_app_from_environment` and controlled deep-JSON handling do not exist.
+
+- [ ] **Step 3: Implement minimal production composition**
+
+```python
+def build_app_from_environment() -> FastAPI:
+    return create_app(
+        database_path=require_env("AUTH_BROKER_DATABASE_PATH"),
+        audience=require_env("AUTH_BROKER_AUDIENCE"),
+        owner_verifier=CloudflareAccessVerifier(
+            issuer=require_env("AUTH_BROKER_CF_ACCESS_ISSUER"),
+            audience=require_env("AUTH_BROKER_CF_ACCESS_AUDIENCE"),
+            owner_email=require_env("AUTH_BROKER_OWNER_EMAIL"),
+        ),
+        hermes=HttpHermesClient(
+            url=require_env("HERMES_A2A_URL"),
+            bearer=require_env("HERMES_BROKER_TOKEN"),
+        ),
+    )
+```
+
+- [ ] **Step 4: Run tests and verify they pass**
+
+Run: `pytest src/auth-broker/tests -q`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/auth-broker
+git commit -m "feat: add broker production composition"
+```
+
 ## Self-review
 
 - The plan covers autonomous request, owner approval, key proof, SQLite persistence, revocation and separate upstream authentication.
 - It deliberately excludes scopes and third-party sharing, which are v0.1 work.
 - All production interfaces named in later tasks are introduced by an earlier task or the same task.
+
+## Execution record
+
+- Task 1 completed in `77bd0ca` after the pairing lifecycle tests passed.
+- Task 2 completed in `a7b7317`, with the audit-state correction in `fd5cf71` after review.
+- Task 3 completed in `493675a`; the deep-JSON client-error review finding was addressed in Task 4.
+- Task 4 completed in `b106263`; it adds fail-closed production composition and the controlled deep-JSON response. The complete broker suite passed locally (81 tests; two dependency deprecation warnings).

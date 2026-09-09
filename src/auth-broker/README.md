@@ -6,8 +6,8 @@ O broker admite agentes do dono no gateway A2A sem entregar a eles o bearer est�
 
 - Descoberta pública do endpoint de pareamento.
 - Pedido autônomo com chave pública do agente e metadados declarados.
-- Aprovação ou recusa explícita do dono em UI autenticada.
-- Credencial curta vinculada à chave aprovada.
+- Aprovação explícita do dono por uma chamada protegida por Cloudflare Access.
+- Credencial curta vinculada à chave aprovada, materializada como estado de agente no broker.
 - Revogação e trilha de auditoria.
 - Proxy autenticado ao gateway Hermes com credencial privada do broker.
 
@@ -20,7 +20,7 @@ O broker admite agentes do dono no gateway A2A sem entregar a eles o bearer est�
 
 ## Persistência inicial
 
-SQLite na VPS, em volume privado e com backup operacional. O banco conterá somente registros de domínio: `pairing_requests`, `agents`, `credential_keys`, `revocations` e `audit_events`. O schema e as migrações entram junto com a aplicação, não nesta fundação documental.
+SQLite na VPS, em volume privado e com backup operacional. O banco contém somente `pairing_requests`, `agents`, `audit_events` e hashes de nonces já consumidos. Não armazena desafios em claro, assinaturas, consultas, respostas ou tokens.
 
 ## Fronteiras
 
@@ -31,3 +31,7 @@ agente → broker → Hermes A2A
 ```
 
 O token de agente termina no broker. O broker emite ou usa sua própria credencial no salto para Hermes. A especificação completa está em [[wiki/architecture/0001-agent-pairing-broker-v001]].
+
+## Operação
+
+O broker só sobe quando todas as variáveis obrigatórias estão presentes; não há valores padrão para segredos. `scripts/setup-vps.sh /caminho/absoluto/auth-broker.env` prepara o ambiente virtual e roda testes sem iniciar o serviço. O procedimento de instalação, CNAME e política Cloudflare Access está em [[docs/operations/install-auth-broker-vps]]. Ele é um guia de preparação: não significa que a VPS ou o Tunnel tenham sido alterados.

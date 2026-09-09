@@ -14,3 +14,7 @@ Documentação mínima para agentes que precisam entender o repositório sem dep
 
 - [[src/hermes-identity/README]] — identidade sincronizada e compatibilidade do layout antigo.
 - [[src/auth-broker/README]] — contrato do broker e limites deliberados da v0.0.1.
+
+## Operação
+
+- [[docs/operations/install-auth-broker-vps]] — instalação proposta na VPS, hostname `pair.a2a.mathai.com.br` e limite da política Cloudflare Access.
