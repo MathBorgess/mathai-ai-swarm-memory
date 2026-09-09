@@ -21,7 +21,7 @@ docs/                 plano de implementação executável
 
 O sync de identidade funciona. O broker ainda não é um serviço executável: v0.0.1 foi delimitada, mas só começa após o plano, a revisão da ADR e a escolha da configuração Cloudflare Access.
 
-O remoto GitHub ainda se chama `MathBorgess/hermes-identity`. A renomeação para `mathai-context-engine` fica pendente de migração coordenada das máquinas e da box; mudar o remoto agora quebraria o bootstrap que elas já usam.
+O remoto GitHub é `MathBorgess/mathai-context-engine`. Clones e links locais podem manter o diretório `~/src/hermes-identity`; o bootstrap aponta ao novo remoto e os URLs antigos do GitHub permanecem redirecionados durante a transição.
 
 ```bash
 ./hermes-sync-identity.sh link

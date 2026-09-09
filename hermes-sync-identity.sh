@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-REPO_SLUG="${HERMES_IDENTITY_REPO:-MathBorgess/hermes-identity}"
+REPO_SLUG="${HERMES_IDENTITY_REPO:-MathBorgess/mathai-context-engine}"
 CLONE_DIR="${HERMES_IDENTITY_DIR:-$HOME/src/hermes-identity}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 CMD="${1:-pull}"
