@@ -66,6 +66,12 @@ class SqlitePairingStore:
                 request_id TEXT NOT NULL REFERENCES pairing_requests(id),
                 agent_id TEXT REFERENCES agents(id)
             );
+            CREATE TABLE IF NOT EXISTS consumed_nonces (
+                agent_id TEXT NOT NULL REFERENCES agents(id),
+                nonce_hash TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY (agent_id, nonce_hash)
+            );
             CREATE TRIGGER IF NOT EXISTS audit_events_no_update
                 BEFORE UPDATE ON audit_events
                 BEGIN SELECT RAISE(ABORT, 'Audit events are append-only'); END;
@@ -178,3 +184,22 @@ class SqlitePairingStore:
                     "SELECT request_id FROM agents WHERE id = ?", (agent_id,)
                 ).fetchone()
                 self._audit("agent_revoked", at, row["request_id"], agent_id)
+
+    def consume_nonce(self, agent_id: str, nonce: bytes, now: datetime, expires_at: datetime) -> None:
+        """Atomically reject replay; only a nonce digest survives this call."""
+        _aware(now)
+        _aware(expires_at)
+        if len(nonce) != 32 or expires_at <= now:
+            raise ValueError("Invalid nonce lifetime")
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            if self.active_agent(agent_id, now) is None:
+                raise InvalidPairingState("Inactive agent")
+            self.connection.execute("DELETE FROM consumed_nonces WHERE expires_at <= ?", (now.astimezone(timezone.utc).isoformat(),))
+            try:
+                self.connection.execute(
+                    "INSERT INTO consumed_nonces VALUES (?, ?, ?)",
+                    (agent_id, hashlib.sha256(nonce).hexdigest(), expires_at.astimezone(timezone.utc).isoformat()),
+                )
+            except sqlite3.IntegrityError:
+                raise InvalidPairingProof("Repeated nonce") from None
