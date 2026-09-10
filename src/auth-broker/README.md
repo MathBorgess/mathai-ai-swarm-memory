@@ -41,9 +41,11 @@ suportado), e credencial Hermes separada apenas no ambiente privado.
 Em produção, configure `GITHUB_OAUTH_CLIENT_ID` e `GITHUB_OAUTH_CLIENT_SECRET`
 no ambiente do broker. `/v1/oauth/github/token` troca o código, valida
 `GET https://api.github.com/user`, descarta o token upstream e emite um token
-opaco do broker com o TTL padrão de uma hora. O cliente deve pré-registrar seu
-`redirect_uri`; callbacks arbitrários devem ser rejeitados na configuração de
-produção.
+opaco do broker com o TTL padrão de uma hora. O fluxo começa em
+`/v1/oauth/github/start`, que cria estado one-time com validade de dez minutos;
+o token endpoint exige esse estado e compara o `redirect_uri` exatamente com
+`GITHUB_OAUTH_REDIRECT_URI`. Configure também `GITHUB_ALLOWED_USER_ID` com o ID
+numérico estável do usuário GitHub autorizado; login textual não é uma âncora.
 
 ## Persistência inicial
 

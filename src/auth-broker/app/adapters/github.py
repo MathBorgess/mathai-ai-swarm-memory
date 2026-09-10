@@ -26,9 +26,9 @@ class HttpGitHubOAuth:
                     raise GitHubOAuthError("GitHub token exchange failed")
                 identity = client.get("https://api.github.com/user", headers={"Authorization": "Bearer " + access_token, "Accept": "application/vnd.github+json"})
                 identity.raise_for_status()
-                login = identity.json().get("login")
-                if not isinstance(login, str) or not login:
+                user_id = identity.json().get("id")
+                if not isinstance(user_id, int) or user_id <= 0:
                     raise GitHubOAuthError("GitHub identity validation failed")
-                return login
+                return str(user_id)
         except (httpx.HTTPError, ValueError, TypeError):
             raise GitHubOAuthError("GitHub OAuth validation failed") from None

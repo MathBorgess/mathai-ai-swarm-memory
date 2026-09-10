@@ -83,6 +83,10 @@ class SqlitePairingStore:
                 token_hash TEXT PRIMARY KEY, subject TEXT NOT NULL, scopes TEXT NOT NULL,
                 issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS oauth_states (
+                state_hash TEXT PRIMARY KEY, redirect_uri TEXT NOT NULL,
+                created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consumed_at TEXT
+            );
             CREATE TRIGGER IF NOT EXISTS audit_events_no_update
                 BEFORE UPDATE ON audit_events
                 BEGIN SELECT RAISE(ABORT, 'Audit events are append-only'); END;
@@ -209,6 +213,22 @@ class SqlitePairingStore:
         if row is None or not datetime.fromisoformat(row["issued_at"]) <= now < datetime.fromisoformat(row["expires_at"]):
             return None
         return BrokerSession(row["token_hash"], row["subject"], tuple(row["scopes"].split()), datetime.fromisoformat(row["expires_at"]))
+
+    def create_oauth_state(self, state_hash: str, redirect_uri: str, created_at: datetime, expires_at: datetime) -> None:
+        with self.connection:
+            self.connection.execute("INSERT INTO oauth_states VALUES (?, ?, ?, ?, NULL)", (state_hash, redirect_uri, created_at.isoformat(), expires_at.isoformat()))
+
+    def consume_oauth_state(self, state_hash: str, redirect_uri: str, now: datetime) -> bool:
+        with self.connection:
+            row = self.connection.execute("SELECT * FROM oauth_states WHERE state_hash = ?", (state_hash,)).fetchone()
+            if row is None or row["consumed_at"] is not None or row["redirect_uri"] != redirect_uri or now >= datetime.fromisoformat(row["expires_at"]):
+                return False
+            self.connection.execute("UPDATE oauth_states SET consumed_at = ? WHERE state_hash = ? AND consumed_at IS NULL", (now.isoformat(), state_hash))
+            return True
+
+    def revoke_session(self, token_hash: str, now: datetime) -> None:
+        with self.connection:
+            self.connection.execute("UPDATE broker_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL", (now.isoformat(), token_hash))
 
     def consume_nonce(self, agent_id: str, nonce: bytes, now: datetime, expires_at: datetime) -> None:
         """Atomically reject replay; only a nonce digest survives this call."""

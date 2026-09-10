@@ -22,8 +22,8 @@ def test_card_is_structured_github_oauth_contract():
     assert card["url"] == "https://a2a.mathai.com.br"
     assert scheme["type"] == "oauth2"
     assert scheme["x-provider"] == "github"
-    assert flow["authorizationUrl"] == "https://github.com/login/oauth/authorize"
-    assert flow["tokenUrl"] == "https://github.com/login/oauth/access_token"
+    assert flow["authorizationUrl"] == "https://a2a.mathai.com.br/v1/oauth/github/start"
+    assert flow["tokenUrl"] == "https://a2a.mathai.com.br/v1/oauth/github/token"
     assert flow["scopes"] == OAUTH_SCOPES
     assert card["security"] == [{"githubOAuth": list(OAUTH_SCOPES)}]
 

@@ -2,7 +2,7 @@
 
 Este guia prepara o **Agent Pairing Broker v0.0.1** na VPS que já expõe Hermes em `a2a.mathai.com.br`. Ele não faz deploy automaticamente e não autoriza a alterar a conta Cloudflare ou o gateway existente sem revisão humana.
 
-O hostname planejado do broker é **`pair.a2a.mathai.com.br`**. Ele aponta pelo mesmo Named Tunnel e pela mesma zona DNS que já atendem `a2a.mathai.com.br`, mas com origem local própria: `http://127.0.0.1:9910`.
+O agente externo usa somente **`https://a2a.mathai.com.br`** e descobre o Agent Card e os endpoints OAuth no mesmo origin. `pair.a2a.mathai.com.br` é legado/privado para a UI de aprovação, se mantido; não deve aparecer no Agent Card nem ser exigido de agentes.
 
 ## Limites de segurança
 
@@ -28,11 +28,16 @@ Crie `/home/box/.mathai-context-engine/auth-broker.env` com modo `600`. Não ver
 
 ```dotenv
 AUTH_BROKER_DATABASE_PATH=/home/box/.mathai-context-engine/auth-broker.sqlite3
-AUTH_BROKER_AUDIENCE=https://pair.a2a.mathai.com.br
+AUTH_BROKER_AUDIENCE=https://a2a.mathai.com.br
 AUTH_BROKER_CF_ACCESS_ISSUER=https://<team-name>.cloudflareaccess.com
 AUTH_BROKER_CF_ACCESS_AUDIENCE=<access-application-aud-tag>
 AUTH_BROKER_OWNER_EMAIL=<email-do-dono-no-idp>
 HERMES_A2A_URL=https://a2a.mathai.com.br
+# OAuth App registrada previamente; nunca comite estes valores.
+GITHUB_OAUTH_CLIENT_ID=...
+GITHUB_OAUTH_CLIENT_SECRET=...
+GITHUB_OAUTH_REDIRECT_URI=https://a2a.mathai.com.br/oauth/github/callback
+GITHUB_ALLOWED_USER_ID=...
 HERMES_BROKER_TOKEN=<token-de-peer-exclusivo-do-broker>
 ```
 
