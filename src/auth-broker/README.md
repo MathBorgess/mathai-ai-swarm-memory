@@ -33,7 +33,7 @@ bloquear URLs não curadas, exigir aprovação para rede ou tratar instruções
 remotas como prompt injection; código Python que posta diretamente em `github.com`
 ou em um broker também contorna a fronteira de autorização e não deve ser usado
 como mecanismo de autenticação. O cliente A2A deve implementar OAuth nativamente,
-com PKCE/state (ou Device Flow), allowlist de hosts e validação TLS. A segurança
+com Device Flow, allowlist de hosts e validação TLS. A segurança
 ideal é: token GitHub curto e escopo mínimo, sessão broker audience-bound e
 expiração/revogação, associação a uma chave efêmera do cliente (DPoP quando
 suportado), e credencial Hermes separada apenas no ambiente privado.

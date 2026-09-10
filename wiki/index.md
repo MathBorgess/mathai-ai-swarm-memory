@@ -17,4 +17,4 @@ Documentação mínima para agentes que precisam entender o repositório sem dep
 
 ## Operação
 
-- [[docs/operations/install-auth-broker-vps]] — instalação proposta na VPS, hostname `pair.a2a.mathai.com.br` e limite da política Cloudflare Access.
+- [[docs/operations/install-auth-broker-vps]] — instalação proposta na VPS, origin único `a2a.mathai.com.br` e limite da política Cloudflare Access.

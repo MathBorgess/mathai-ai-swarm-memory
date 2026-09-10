@@ -8,7 +8,7 @@ O gateway Hermes em `a2a.mathai.com.br` usa peers com bearer estático. Isso nã
 
 ## Decisão
 
-Criar um broker em `pair.a2a.mathai.com.br`, executando na VPS pública atrás do Tunnel Cloudflare. O agente descobre o endpoint, gera ou apresenta uma chave pública e abre um pedido. O dono aprova na UI protegida por Cloudflare Access. O broker emite uma credencial curta vinculada à chave e mantém, apenas no ambiente privado, a credencial que usa para chegar ao Hermes.
+Executar o broker na VPS atrás do Tunnel Cloudflare no origin público `a2a.mathai.com.br`; Hermes permanece somente em `127.0.0.1:9900` e o broker em `127.0.0.1:9910`. O agente descobre o endpoint, usa Device Flow GitHub e recebe sessão curta. O dono aprova pareamentos na rota protegida por Cloudflare Access. O broker mantém, apenas no ambiente privado, a credencial que usa para chegar ao Hermes.
 
 SQLite será o armazenamento transacional inicial. A aplicação grava estados de pedido, fingerprints de chave, expiração, revogação e auditoria; não grava tokens de MCP, OAuth, Access ou Hermes.
 
@@ -17,7 +17,7 @@ SQLite será o armazenamento transacional inicial. A aplicação grava estados d
 - Um agente pode iniciar o pareamento sem workflow GitHub e sem receber token fixo do Hermes.
 - A aprovação do dono continua sendo a prova de posse e a barreira para agentes de terceiros.
 - O broker torna-se fronteira de confiança e precisa validar assinatura, audiência, expiração, revogação e correlação antes de encaminhar uma chamada.
-- V0.0.1 usa um único perfil de acesso `owner-agent`; escopos finos são trabalho de v0.1, não um atalho escondido.
+- A sessão declara somente `a2a:discover`, `a2a:message` e `a2a:history`; escopos de ferramenta, projeto e documento continuam fora do contrato.
 
 ## Alternativas rejeitadas
 

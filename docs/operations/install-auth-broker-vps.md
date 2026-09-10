@@ -9,7 +9,7 @@ O agente externo usa somente **`https://a2a.mathai.com.br`** e descobre o Agent 
 - Agentes não recebem `HERMES_BROKER_TOKEN`. Esse bearer é usado apenas pelo processo broker no salto para Hermes.
 - O SQLite fica fora do clone, com permissões privadas. Não copie banco, `.env` nem logs para GitHub.
 - A aprovação precisa de Cloudflare Access; abertura do pedido, prova da chave e consulta assinada continuam alcançáveis por agentes sem sessão de navegador.
-- V0.0.1 não implementa escopos de projeto, documento, ferramenta ou terceiro. Aprovar um agente equivale ao perfil temporário `owner-agent`.
+- O Device Flow emite somente `a2a:discover`, `a2a:message` e `a2a:history`; não há escopos de projeto, documento, ferramenta ou terceiro.
 
 ## 1. Instalar o código e as dependências
 
@@ -32,7 +32,7 @@ AUTH_BROKER_AUDIENCE=https://a2a.mathai.com.br
 AUTH_BROKER_CF_ACCESS_ISSUER=https://<team-name>.cloudflareaccess.com
 AUTH_BROKER_CF_ACCESS_AUDIENCE=<access-application-aud-tag>
 AUTH_BROKER_OWNER_EMAIL=<email-do-dono-no-idp>
-HERMES_A2A_URL=https://a2a.mathai.com.br
+HERMES_A2A_URL=http://127.0.0.1:9900
 # OAuth App registrada previamente; nunca comite estes valores.
 GITHUB_OAUTH_CLIENT_ID=...
 GITHUB_OAUTH_CLIENT_SECRET=...
@@ -84,13 +84,13 @@ nohup /bin/bash -lc 'cd /home/box/github/mathai-context-engine/src/auth-broker &
 
 O origin fica em HTTP porque o Tunnel alcança `127.0.0.1`; TLS termina na Cloudflare. Não exponha a porta `9910` diretamente na internet.
 
-## 5. Criar o hostname no Cloudflare Tunnel
+## 5. Alterar o hostname no Cloudflare Tunnel
 
 Na **mesma conta Cloudflare que controla a zona `mathai.com.br` e o Named Tunnel existente**, acrescente o Public Hostname:
 
 | Campo | Valor |
 | --- | --- |
-| Hostname | `pair.a2a.mathai.com.br` |
+| Hostname | `a2a.mathai.com.br` |
 | Service | `http://127.0.0.1:9910` |
 | Tunnel | o mesmo Named Tunnel já usado por `a2a.mathai.com.br` |
 
@@ -98,7 +98,7 @@ A criação do Public Hostname mantém o CNAME gerenciado pelo Tunnel. Não crie
 
 ## 6. Proteger somente a aprovação do dono com Cloudflare Access
 
-Crie uma aplicação **Self-hosted** no Cloudflare Access para o hostname `pair.a2a.mathai.com.br`, limitada ao caminho de aprovação:
+Mantenha uma aplicação **Self-hosted** no Cloudflare Access para o hostname `a2a.mathai.com.br`, limitada somente ao caminho de aprovação:
 
 ```text
 /v1/pairing-requests/<request-id>/approve
@@ -117,7 +117,7 @@ Não use Service Token, header de e-mail ou um token MCP como substituto dessa a
 Depois do Tunnel publicar o hostname, confirme que a rota pública chega ao aplicativo sem criar um pedido:
 
 ```bash
-curl -i -X POST https://pair.a2a.mathai.com.br/v1/pairing-requests \
+curl -i -X POST https://a2a.mathai.com.br/v1/pairing-requests \
   -H 'content-type: application/json' \
   --data '{}'
 ```
@@ -135,6 +135,6 @@ Repita a mesma consulta idêntica: ela deve falhar por replay. Teste também aud
 
 ## Rollback e revogação
 
-Para interromper o serviço, pare o processo do broker e remova o Public Hostname do Tunnel. Depois remova o peer `auth-broker` de `A2A_PEER_TOKENS` e reinicie Hermes. Preserve o SQLite para auditoria e faça backup protegido antes de qualquer exclusão deliberada.
+Para rollback, restaure temporariamente o Public Hostname `a2a.mathai.com.br` para `http://127.0.0.1:9900` (Hermes direto), pare o broker e remova o peer `auth-broker` de `A2A_PEER_TOKENS`; depois reinicie Hermes. Preserve o SQLite para auditoria e faça backup protegido antes de qualquer exclusão deliberada.
 
-Uma operação futura de revogação deve marcar o agente no broker antes de alterar credenciais do upstream. V0.0.1 não oferece escopos; a revogação é por agente.
+Uma operação futura de revogação deve marcar o agente no broker antes de alterar credenciais do upstream. A revogação de sessão é imediata; a revogação de agente continua disponível por agente.
