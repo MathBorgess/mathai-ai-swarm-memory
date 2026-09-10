@@ -72,7 +72,7 @@ def create_app(*, database_path: str | Path, audience: str,
         raise ValueError("Audience and agent lifetime of at most one hour are required")
     app = FastAPI(title="Agent Pairing Broker", version="0.0.1")
     session_lifetime = session_lifetime or agent_lifetime
-    device_transactions: dict[str, tuple[str, datetime]] = {}
+    device_transactions: dict[str, tuple[str, datetime, datetime, int]] = {}
 
     @app.get("/.well-known/agent-card.json")
     def agent_card():
@@ -87,8 +87,9 @@ def create_app(*, database_path: str | Path, audience: str,
             transaction = secrets.token_urlsafe(32); now = clock()
             if len(device_transactions) >= 256:
                 device_transactions.pop(next(iter(device_transactions)))
-            device_transactions[transaction] = (payload["device_code"], now + timedelta(minutes=10))
-            return {"transaction": transaction, "user_code": payload["user_code"], "verification_uri": payload["verification_uri"], "expires_in": 600, "interval": payload.get("interval", 5)}
+            interval = max(5, int(payload.get("interval", 5)))
+            device_transactions[transaction] = (payload["device_code"], now + timedelta(minutes=10), now, interval)
+            return {"device_code": transaction, "user_code": payload["user_code"], "verification_uri": payload["verification_uri"], "expires_in": 600, "interval": interval}
         except (KeyError, GitHubOAuthError):
             raise HTTPException(502, "GitHub device flow unavailable") from None
 
@@ -97,12 +98,18 @@ def create_app(*, database_path: str | Path, audience: str,
         if github_oauth is None:
             raise HTTPException(503, "GitHub OAuth is not configured")
         try:
-            data = _object(body); transaction = data["transaction"]
-            device_code, expires_at = device_transactions[transaction]
+            data = _object(body)
+            if set(data) != {"device_code", "grant_type"} or data["grant_type"] != "urn:ietf:params:oauth:grant-type:device_code":
+                raise ValueError()
+            transaction = data["device_code"]
+            device_code, expires_at, next_poll, interval = device_transactions[transaction]
             if expires_at <= clock():
                 del device_transactions[transaction]; raise ValueError()
+            if clock() < next_poll:
+                return {"status": "authorization_pending", "retry_after": int((next_poll - clock()).total_seconds()) + 1}
             subject = github_oauth.poll_device(device_code)
             if subject is None:
+                device_transactions[transaction] = (device_code, expires_at, clock() + timedelta(seconds=interval), interval)
                 return {"status": "authorization_pending"}
             if github_allowed_user_id is None or subject != github_allowed_user_id:
                 del device_transactions[transaction]; raise ValueError()
