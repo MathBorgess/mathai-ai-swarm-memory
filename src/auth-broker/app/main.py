@@ -35,7 +35,6 @@ def build_app_from_environment() -> FastAPI:
         hermes=HttpHermesClient(hermes_url, hermes_bearer),
         github_oauth=(HttpGitHubOAuth(github_client_id, github_client_secret)
                       if github_client_id and github_client_secret else None),
-        github_redirect_uri=os.environ.get("GITHUB_OAUTH_REDIRECT_URI"),
         github_allowed_user_id=os.environ.get("GITHUB_ALLOWED_USER_ID"),
     )
 

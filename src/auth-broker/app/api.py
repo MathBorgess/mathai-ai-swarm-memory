@@ -66,7 +66,6 @@ def create_app(*, database_path: str | Path, audience: str,
                public_url: str = "https://a2a.mathai.com.br",
                github_oauth: GitHubOAuth | None = None,
                session_lifetime: timedelta | None = None,
-               github_redirect_uri: str | None = None,
                github_allowed_user_id: str | None = None) -> FastAPI:
     if not audience or not timedelta(0) < agent_lifetime <= timedelta(hours=1):
         raise ValueError("Audience and agent lifetime of at most one hour are required")
@@ -120,42 +119,6 @@ def create_app(*, database_path: str | Path, audience: str,
             return {"access_token": token, "token_type": "Bearer", "scope": " ".join(scopes), "expires_in": int(session_lifetime.total_seconds())}
         except (KeyError, TypeError, ValueError, GitHubOAuthError):
             raise HTTPException(403, "GitHub device authorization denied") from None
-
-    @app.post("/v1/oauth/github/start")
-    def github_start(body: bytes = Depends(_body)):
-        if github_oauth is None or not github_redirect_uri:
-            raise HTTPException(503, "GitHub OAuth is not configured")
-        state = secrets.token_urlsafe(32); now = clock()
-        with closing(SqlitePairingStore(database_path)) as store:
-            store.create_oauth_state(hashlib.sha256(state.encode()).hexdigest(), github_redirect_uri, now, now + timedelta(minutes=10))
-        return {"authorization_url": "https://github.com/login/oauth/authorize", "state": state, "redirect_uri": github_redirect_uri}
-
-    @app.post("/v1/oauth/github/token")
-    def github_token(body: bytes = Depends(_body)):
-        if github_oauth is None:
-            raise HTTPException(503, "GitHub OAuth is not configured")
-        try:
-            data = _object(body)
-            if set(data) != {"code", "state", "redirect_uri", "scope"} or not all(isinstance(data[k], str) for k in data):
-                raise ValueError()
-            if not github_redirect_uri or data["redirect_uri"] != github_redirect_uri:
-                raise ValueError()
-            requested = tuple(data["scope"].split())
-            if set(requested) != {"a2a:discover", "a2a:message", "a2a:history"}:
-                raise ValueError()
-            with closing(SqlitePairingStore(database_path)) as store:
-                if not store.consume_oauth_state(hashlib.sha256(data["state"].encode()).hexdigest(), data["redirect_uri"], clock()):
-                    raise ValueError()
-            subject = github_oauth.exchange_and_identify(data["code"], data["redirect_uri"])
-            if github_allowed_user_id is None or subject != github_allowed_user_id:
-                raise ValueError()
-            token = secrets.token_urlsafe(32)
-            now = clock()
-            with closing(SqlitePairingStore(database_path)) as store:
-                store.create_session(hashlib.sha256(token.encode()).hexdigest(), subject, requested, now, now + session_lifetime)
-            return {"access_token": token, "token_type": "Bearer", "scope": " ".join(requested), "expires_in": int(session_lifetime.total_seconds())}
-        except (ValueError, TypeError, GitHubOAuthError):
-            raise HTTPException(403, "GitHub OAuth denied") from None
 
     @app.post("/v1/oauth/revoke")
     def revoke_session(request: Request):
