@@ -2,7 +2,7 @@
 
 ## Propósito
 
-Manter uma camada de contexto privada e revisável para agentes do dono. O repositório contém a identidade Hermes e o contrato do futuro broker de pareamento; o conhecimento compilado pertence ao `mathai-wiki`.
+Manter uma camada de contexto privada e revisável para agentes do dono. O repositório contém a identidade Hermes e o broker A2A OAuth; o conhecimento compilado pertence ao `mathai-wiki`.
 
 ## Orientação obrigatória
 
@@ -18,10 +18,10 @@ Leia nesta ordem: `CLAUDE.md` → `wiki/index.md` → ADR ou roadmap aplicável 
 ## Segurança inegociável
 
 1. Nunca comitar `.env`, `auth.json`, tokens A2A, token de tunnel, cookies, sessões, cache, chaves privadas ou SQLite real.
-2. O broker guarda chaves públicas, hashes de desafios, estados de pareamento e auditoria. Segredos de assinatura e o bearer privado broker→Hermes ficam somente no ambiente da VPS.
+2. O broker guarda estado de grants/transações e auditoria sem tokens upstream. Client secret GitHub, bearer privado broker→Hermes e SQLite real ficam somente no ambiente da VPS.
 3. MCP autenticado é capacidade local do agente; não é uma credencial que pode ser encaminhada ao broker.
 4. O broker termina a autenticação do agente e usa outra credencial para chamar Hermes. Nunca encaminhe o token apresentado pelo agente.
-5. A aprovação do dono usa a rota de aprovação protegida por Cloudflare Access; v0.0.1 não aceita autoaprovação nem convidados de terceiros.
+5. A aprovação do dono usa GitHub Device Flow e uma allowlist de ID numérico. Não adicione Cloudflare Access ao hostname A2A público; o fluxo legado de pairing permanece desativado.
 
 ## Compatibilidade Hermes
 
@@ -36,7 +36,7 @@ Após Hermes alterar memória, rode `./hermes-sync-identity.sh push`. Antes de i
 
 ## A2A atual e destino
 
-`https://a2a.mathai.com.br` continua sendo o gateway Hermes. O broker terá hostname próprio, proposto como `pair.a2a.mathai.com.br`; ele não expõe o bearer estático do gateway e não amplia a superfície pública do card Hermes.
+`https://a2a.mathai.com.br` é o origin público único do broker; Hermes continua privado em `127.0.0.1:9900`. O cliente descobre o card no mesmo origin, executa Device Flow e usa grant A2A curto. Nunca entregue o bearer Hermes ao cliente.
 
 ## Verificação mínima
 
@@ -44,4 +44,4 @@ Após Hermes alterar memória, rode `./hermes-sync-identity.sh push`. Antes de i
 bash tests/test-hermes-identity-sync.sh
 ```
 
-Testes de protocolo e migração SQLite são obrigatórios antes de qualquer deploy. Não crie workflow GitHub para a descoberta ou o pareamento: leitura via API/MCP não deve consumir GitHub Actions.
+Testes de protocolo e SQLite são obrigatórios antes de qualquer deploy. Para repetir o setup, siga `docs/operations/install-auth-broker-vps.md` e o runbook da wiki; não crie workflow GitHub para descoberta ou autenticação.

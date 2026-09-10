@@ -1,5 +1,7 @@
 # A2A external-agent OAuth implementation plan
 
+> **Status:** implementado e validado na VPS em 09/09. Este plano registra a execução inicial; para reinstalação, promoção e recuperação, use `docs/operations/install-auth-broker-vps.md` e `MathBorgess/mathai-wiki` → `estudos/context-engineering/2026-09-09-a2a-oauth-broker-runbook-vps.md`.
+
 ## Goal
 
 Allow a compatible external A2A client to start with only `https://a2a.mathai.com.br`, discover a structured OAuth contract, and exchange messages through the broker without receiving the Hermes bearer.
@@ -18,8 +20,8 @@ Allow a compatible external A2A client to start with only `https://a2a.mathai.co
 - [x] Expose OAuth metadata and exact scope contract without changing the existing pairing boundary.
 - [x] Test card shape, origin, scopes, and absence of natural-language broker instructions.
 - [x] Document GitHub OAuth and harness limitations, including why arbitrary Python POSTs to external URLs are not a safe authentication primitive.
-- [ ] Run the broker suite and shell verification, then commit the coherent change.
+- [x] Run the broker suite and shell verification, then commit the coherent change.
 
 ## Explicit limits
 
-GitHub OAuth is authorization-code based and does not provide a generic OIDC issuer for these custom A2A scopes. This change publishes the discovery contract; deployment still needs a broker-side GitHub token exchange/introspection adapter and client support for the advertised flow. Cloudflare, VM, DNS, OAuth application registration, and deployment remain manual operations.
+GitHub OAuth is not an OIDC issuer and does not provide a generic ID-token/JWKS validation path for these custom A2A scopes. The broker validates identity through the authenticated GitHub `/user` call and mints its own grant. The GitHub App, VM, DNS/Tunnel and deployment are owner-controlled manual operations; the broker-side Device Flow adapter and the client contract were implemented and exercised. A generic A2A harness still needs its own Device Flow adapter.

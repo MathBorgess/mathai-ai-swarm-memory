@@ -1,137 +1,143 @@
-# Instalar o Agent Pairing Broker na VPS
+# Reinstalar o broker A2A OAuth na VPS
 
-Este guia prepara o **Agent Pairing Broker v0.0.1** na VPS que já expõe Hermes em `a2a.mathai.com.br`. Ele não faz deploy automaticamente e não autoriza a alterar a conta Cloudflare ou o gateway existente sem revisão humana.
+Este documento é o ponto de partida autossuficiente para reconstruir o serviço que expõe `https://a2a.mathai.com.br`. Ele usa GitHub Device Flow para autenticar o dono e mantém Hermes privado no loopback. O procedimento não usa Cloudflare Access: o pairing legado fica desativado e suas rotas devem responder `404`.
 
-O agente externo usa somente **`https://a2a.mathai.com.br`** e descobre o Agent Card e os endpoints OAuth no mesmo origin. `pair.a2a.mathai.com.br` é legado/privado para a UI de aprovação, se mantido; não deve aparecer no Agent Card nem ser exigido de agentes.
+Para a operação diária, staging, promoção e cleanup, leia também a wiki privada `MathBorgess/mathai-wiki`, nota `estudos/context-engineering/2026-09-09-a2a-oauth-broker-runbook-vps.md`. Esta página mantém os pré-requisitos e o caminho completo de reconstrução; o runbook registra os comandos consolidados da instalação validada.
 
-## Limites de segurança
+## Arquitetura e limites
 
-- Agentes não recebem `HERMES_BROKER_TOKEN`. Esse bearer é usado apenas pelo processo broker no salto para Hermes.
-- O SQLite fica fora do clone, com permissões privadas. Não copie banco, `.env` nem logs para GitHub.
-- Sem Cloudflare Access, o pairing legado fica desativado (os caminhos `/v1/pairing-requests/*` retornam `404`). O fluxo público é somente o GitHub Device Flow do broker.
-- O Device Flow emite somente `a2a:discover`, `a2a:message` e `a2a:history`; não há escopos de projeto, documento, ferramenta ou terceiro.
-
-## 1. Instalar o código e as dependências
-
-Na VPS, escolha um diretório privado de serviço. Os caminhos abaixo assumem o usuário `box`; ajuste somente o prefixo se a VPS usar outro usuário.
-
-```bash
-git clone https://github.com/MathBorgess/mathai-context-engine.git /home/box/github/mathai-context-engine
-install -d -m 700 /home/box/.mathai-context-engine
+```text
+agente pessoal -- HTTPS + Device Flow --> a2a.mathai.com.br (broker, 127.0.0.1:9910)
+                                                  |
+                                      bearer de peer, privado
+                                                  v
+                                   Hermes (127.0.0.1:9900)
 ```
 
-O bootstrap é executado depois de criar o arquivo privado de configuração no passo 2. Ele exige Python 3.12 ou superior e instala/testa o componente sem iniciar o serviço. O banco será criado em `/home/box/.mathai-context-engine`, não dentro do repositório.
+- O cliente externo fornece apenas `https://a2a.mathai.com.br`, lê `/.well-known/agent-card.json`, faz Device Flow e usa o grant de uma hora para `POST /v1/context/query` no mesmo origin.
+- GitHub entra apenas para identificar o dono via `read:user`; o broker emite os scopes próprios `a2a:discover`, `a2a:message` e `a2a:history`.
+- `HERMES_BROKER_TOKEN`, o client secret GitHub, o SQLite, logs e o arquivo `.env` ficam exclusivamente na VPS. Não entram em Git, prompts, wiki ou clipboard compartilhado.
+- O broker aceita HTTP somente para o upstream loopback. A borda pública é HTTPS, terminada pelo Tunnel Cloudflare, e a porta `9910` não deve ser exposta diretamente.
+- `a2a:history` é emitido, mas não há endpoint/history policy nesta entrega. O grant é bearer: DPoP e perfis Hermes restritos por sessão são melhorias obrigatórias antes de ampliar para terceiros.
 
-## 2. Criar a configuração local do broker
+## 1. Pré-requisitos que exigem decisão do dono
 
-Crie `/home/box/.mathai-context-engine/auth-broker.env` com modo `600`. Não versionar esse arquivo.
+1. Um GitHub OAuth App do dono, com **Device Flow habilitado**, client ID e client secret privados. Configure `https://a2a.mathai.com.br/` como homepage/callback se o painel exigir uma URL. O broker usa somente `read:user` no upstream.
+2. O ID numérico estável da conta GitHub permitida. Não use o login textual como allowlist.
+3. Um Named Tunnel Cloudflare já associado à zona `mathai.com.br`, com o Public Hostname `a2a.mathai.com.br` encaminhando para `http://127.0.0.1:9910`. Remova Cloudflare Access desse hostname; ele bloquearia o Device Flow público.
+4. Hermes instalado e capaz de iniciar `hermes gateway run` sob o mesmo usuário Linux. Na VPS atual os comandos usam `python3` (3.13) e `netstat`; não pressupõem `python3.12` nem `lsof`.
+
+## 2. Código, diretórios privados e configuração
+
+Os caminhos abaixo usam o usuário `box`; ajuste somente o prefixo caso a VPS use outro usuário. Não cole valores secretos no comando: abra o editor privado local e preencha o arquivo diretamente.
+
+```bash
+git clone https://github.com/MathBorgess/mathai-context-engine.git "$HOME/src/mathai-context-engine"
+git -C "$HOME/src/mathai-context-engine" fetch origin codex/a2a-github-oauth
+git -C "$HOME/src/mathai-context-engine" worktree add --detach \
+  "$HOME/services/a2a-broker" origin/codex/a2a-github-oauth
+
+install -d -m 700 "$HOME/.mathai-context-engine"
+editor "$HOME/.mathai-context-engine/auth-broker.env"
+chmod 600 "$HOME/.mathai-context-engine/auth-broker.env"
+```
+
+Preencha o arquivo `auth-broker.env` com nomes e caminhos exatos, mas sem deixar placeholders literais no arquivo:
 
 ```dotenv
 AUTH_BROKER_DATABASE_PATH=/home/box/.mathai-context-engine/auth-broker.sqlite3
 AUTH_BROKER_AUDIENCE=https://a2a.mathai.com.br
 HERMES_A2A_URL=http://127.0.0.1:9900
-# OAuth App registrada previamente; nunca comite estes valores.
-GITHUB_OAUTH_CLIENT_ID=...
-GITHUB_OAUTH_CLIENT_SECRET=...
-GITHUB_ALLOWED_USER_ID=...
-HERMES_BROKER_TOKEN=<token-de-peer-exclusivo-do-broker>
+GITHUB_OAUTH_CLIENT_ID=<valor-privado>
+GITHUB_OAUTH_CLIENT_SECRET=<valor-privado>
+GITHUB_ALLOWED_USER_ID=<id-numerico-do-dono>
+HERMES_BROKER_TOKEN=<valor-do-peer-auth-broker-no-Hermes>
 ```
 
-As sete variáveis listadas são obrigatórias: valor ausente, vazio ou composto só de espaços impede a inicialização. O `AUTH_BROKER_AUDIENCE` precisa ser exatamente a URL pública do broker. As três variáveis `AUTH_BROKER_CF_ACCESS_*` e `AUTH_BROKER_OWNER_EMAIL` são opcionais e só devem existir juntas se o pairing legado for reativado.
+As sete variáveis são obrigatórias. Não configure `AUTH_BROKER_CF_ACCESS_*` nem `AUTH_BROKER_OWNER_EMAIL`, salvo uma reintrodução deliberada e revisada do pairing legado.
 
-Com o arquivo pronto, execute o bootstrap repetível:
+## 3. Criar ou sincronizar o peer privado com Hermes
+
+Hermes exige o token em `A2A_PEER_TOKENS` e o nome correspondente em `A2A_TRUSTED_PEERS`. Se `auth-broker` já existir, não gere outro valor: sincronize o seu valor canônico para `HERMES_BROKER_TOKEN` sem imprimi-lo.
 
 ```bash
-/home/box/github/mathai-context-engine/src/auth-broker/scripts/setup-vps.sh \
-  /home/box/.mathai-context-engine/auth-broker.env
+HERMES_ENV="$HOME/.hermes/.env"
+STATE="$HOME/.mathai-context-engine"
+BROKER_ENV="$STATE/auth-broker.env"
+
+peer_token="$(sed -n 's/^A2A_PEER_TOKENS=//p' "$HERMES_ENV" | tr ',' '\n' | sed -n 's/^auth-broker://p' | head -n 1)"
+if [ -z "$peer_token" ]; then
+  echo 'Crie auth-broker em A2A_PEER_TOKENS e A2A_TRUSTED_PEERS primeiro; nada foi alterado.'
+else
+  temp_env="$(mktemp)"
+  while IFS= read -r line; do
+    case "$line" in
+      HERMES_BROKER_TOKEN=*) printf 'HERMES_BROKER_TOKEN=%s\n' "$peer_token" ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < "$BROKER_ENV" > "$temp_env"
+  chmod 600 "$temp_env"
+  mv "$temp_env" "$BROKER_ENV"
+  unset peer_token
+fi
 ```
 
-Ele cria o ambiente virtual local, valida todas as variáveis sem imprimi-las, cria o diretório privado do banco e roda os testes. Ele não inicia Uvicorn e não altera Hermes, Tunnel ou Cloudflare Access.
+Para a primeira criação, gere o segredo em arquivo privado com `umask 077; openssl rand -base64 24`, acrescente `auth-broker:<valor>` a `A2A_PEER_TOKENS`, acrescente `auth-broker` a `A2A_TRUSTED_PEERS`, atualize `HERMES_BROKER_TOKEN` pelo mesmo valor e aplique `chmod 600 "$HOME/.hermes/.env"`. Não imprima o resultado. A presença do nome por si só não basta: token divergente causa `401 unauthorized`.
 
-## 3. Criar a credencial privada broker → Hermes
-
-No host que mantém o gateway Hermes, adicione um peer exclusivo para o broker em `~/.hermes/.env`. Gere o segredo localmente e o entregue somente ao arquivo do serviço:
+Reinicie Hermes de forma graciosa antes de iniciar o broker:
 
 ```bash
-openssl rand -base64 24
+ENV_FILE="$HOME/.hermes/.env"
+LOG_FILE="$HOME/.hermes/gateway.log"
+pids="$(pgrep -f 'hermes gateway run' || true)"
+
+if [ -n "$pids" ]; then
+  kill -TERM $pids
+  for _ in $(seq 1 20); do sleep 1; pgrep -f 'hermes gateway run' >/dev/null || break; done
+fi
+
+if pgrep -f 'hermes gateway run' >/dev/null; then
+  echo 'Hermes não parou; investigar antes de continuar.'
+else
+  umask 077
+  nohup /bin/bash -lc 'set -a; . "$HOME/.hermes/.env"; set +a; exec hermes gateway run' >"$LOG_FILE" 2>&1 &
+fi
 ```
 
-Acrescente o resultado em `A2A_PEER_TOKENS` como `auth-broker:<token>` e use o mesmo valor somente em `HERMES_BROKER_TOKEN` no arquivo anterior. Reinicie o processo atual `hermes gateway run` para que a alteração seja carregada.
+## 4. Bootstrap, staging e promoção
 
-Esse token não é credencial de pareamento e não deve aparecer em `AGENTS.md`, na wiki, em Pull Requests, em logs, nem na configuração de qualquer agente cloud. Se o broker for desativado, remova esse peer e reinicie Hermes.
-
-## 4. Iniciar somente no loopback
-
-Teste primeiro em primeiro plano:
+Evite `set -e` no terminal interativo. Ele pode fechar a sessão sem mostrar o diagnóstico. Primeiro valide e suba staging em `9911`:
 
 ```bash
-cd /home/box/github/mathai-context-engine/src/auth-broker
-set -a
-. /home/box/.mathai-context-engine/auth-broker.env
-set +a
-exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9910
+BROKER="$HOME/services/a2a-broker"
+STATE="$HOME/.mathai-context-engine"
+ENV_FILE="$STATE/auth-broker.env"
+
+PYTHON_BIN=python3 "$BROKER/src/auth-broker/scripts/setup-vps.sh" "$ENV_FILE"
+
+nohup /bin/bash -lc "cd '$BROKER/src/auth-broker' && set -a && . '$ENV_FILE' && set +a && exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9911" \
+  >"$STATE/auth-broker-next.log" 2>&1 &
+sleep 2
+curl -fsS http://127.0.0.1:9911/.well-known/agent-card.json | jq '.securitySchemes'
 ```
 
-Como a VPS atual não pressupõe `systemd`, uma primeira execução persistente pode usar `nohup` depois da validação manual:
+Depois do card local responder, use `netstat -ltnp` para identificar explicitamente o PID anterior em `9910`, pare-o com `kill -TERM <pid>`, pare o staging de `9911` e inicie o mesmo comando com `--port 9910`. Só então o Tunnel entrega o origin público ao broker novo.
 
 ```bash
-nohup /bin/bash -lc 'cd /home/box/github/mathai-context-engine/src/auth-broker && set -a && . /home/box/.mathai-context-engine/auth-broker.env && set +a && exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9910' \
-  >/home/box/.mathai-context-engine/auth-broker.log 2>&1 &
+netstat -ltnp 2>/dev/null | grep -E ':(9900|9910|9911)[[:space:]]' || true
 ```
 
-O origin fica em HTTP porque o Tunnel alcança `127.0.0.1`; TLS termina na Cloudflare. Não exponha a porta `9910` diretamente na internet.
+## 5. Smoke, revogação e recuperação
 
-## 5. Alterar o hostname no Cloudflare Tunnel
-
-Na **mesma conta Cloudflare que controla a zona `mathai.com.br` e o Named Tunnel existente**, acrescente o Public Hostname:
-
-| Campo | Valor |
-| --- | --- |
-| Hostname | `a2a.mathai.com.br` |
-| Service | `http://127.0.0.1:9910` |
-| Tunnel | o mesmo Named Tunnel já usado por `a2a.mathai.com.br` |
-
-A criação do Public Hostname mantém o CNAME gerenciado pelo Tunnel. Não crie CNAME para `trycloudflare.com`, não use outra conta Cloudflare e não aponte esse hostname para a porta do Hermes.
-
-## 6. Proteger somente a aprovação do dono com Cloudflare Access
-
-Mantenha uma aplicação **Self-hosted** no Cloudflare Access para o hostname `a2a.mathai.com.br`, limitada somente ao caminho de aprovação:
-
-```text
-/v1/pairing-requests/<request-id>/approve
-```
-
-Na interface de Application paths, configure a variante curinga suportada para cobrir apenas esse último segmento variável. A sintaxe exibida no painel deve ser conferida com a documentação atual de [Application paths / Cloudflare Access](https://developers.cloudflare.com/workers/configuration/cloudflare-access/); não converta isso numa regra que proteja o hostname inteiro.
-
-Adicione uma política **Allow** que autentique exclusivamente o dono pelo IdP escolhido (por exemplo, GitHub) e pelo e-mail exato configurado em `AUTH_BROKER_OWNER_EMAIL`. Uma aplicação Access sem política permite acesso a ninguém. Copie o `AUD` da aplicação e o issuer do team domain para o arquivo de ambiente do broker.
-
-O origin valida o JWT recebido no header `Cf-Access-Jwt-Assertion` por JWKS, issuer, audience, algoritmo RS256 e e-mail do dono. A referência oficial para essa validação é [Validating JSON Web Tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
-
-Não use Service Token, header de e-mail ou um token MCP como substituto dessa aprovação. Também não proteja `/v1/pairing-requests` ou `/v1/context/query` com Access: isso impediria o fluxo autônomo de agentes.
-
-## 7. Validação e operação
-
-Depois do Tunnel publicar o hostname, confirme que a rota pública chega ao aplicativo sem criar um pedido:
+O smoke não autenticado abaixo verifica o caminho público sem vazar tokens:
 
 ```bash
-curl -i -X POST https://a2a.mathai.com.br/v1/pairing-requests \
-  -H 'content-type: application/json' \
-  --data '{}'
+curl -fsS https://a2a.mathai.com.br/.well-known/agent-card.json \
+  | jq '{url, security, deviceCode: .securitySchemes.githubOAuth.flows.deviceCode}'
 ```
 
-O resultado esperado é `400 Invalid pairing request`. Ele prova rota, Tunnel e serviço, mas não o fluxo de autenticação.
+O teste completo deve usar um cliente Device Flow compatível: pedir os três scopes, o dono aprova no GitHub, fazer poll, chamar `POST /v1/context/query` com o grant e por fim chamar `POST /v1/oauth/revoke`. Não registre nem exiba `access_token`.
 
-Para o smoke completo, use uma chave Ed25519 descartável:
+Para recuperação, investigar primeiro o log privado e os listeners. `401` de Hermes normalmente indica valor de `HERMES_BROKER_TOKEN` diferente do peer `auth-broker`, ou ausência do nome em `A2A_TRUSTED_PEERS`. `404` em pairing legado é esperado sem Cloudflare Access. Se client secret, bearer ou `.env` aparecer em scrollback, clipboard ou log, regenere/revogue a credencial afetada, reescreva o arquivo privado e reinicie; não tente mascarar o incidente com limpeza de histórico.
 
-1. Faça `POST /v1/pairing-requests` com a chave pública em base64 padrão.
-2. Assine o desafio retornado e envie prova para `POST /v1/pairing-requests/{id}/proof`.
-3. Autentique o dono via Access e aprove em `POST /v1/pairing-requests/{id}/approve`.
-4. Envie uma consulta a `POST /v1/context/query` com `X-Agent-Envelope` canônico e `X-Agent-Signature` Ed25519. O envelope tem `agent_id`, `audience`, `timestamp` UTC, nonce de 32 bytes e SHA-256 dos bytes exatos do corpo.
-
-Repita a mesma consulta idêntica: ela deve falhar por replay. Teste também audiência errada, assinatura errada e pedido não aprovado; todos devem falhar. Não inclua texto da consulta nos logs de validação.
-
-## Rollback e revogação
-
-Para rollback, restaure temporariamente o Public Hostname `a2a.mathai.com.br` para `http://127.0.0.1:9900` (Hermes direto), pare o broker e remova o peer `auth-broker` de `A2A_PEER_TOKENS`; depois reinicie Hermes. Preserve o SQLite para auditoria e faça backup protegido antes de qualquer exclusão deliberada.
-
-Uma operação futura de revogação deve marcar o agente no broker antes de alterar credenciais do upstream. A revogação de sessão é imediata; a revogação de agente continua disponível por agente.
+No cleanup mínimo, preserve produção `9910`, o SQLite e o checkout anterior durante a observação. Remova somente processo/log de staging `9911` depois de verificar que a porta não está em uso. Não use `pkill` genérico, `rm -rf` ou remoção de banco sem backup deliberado.

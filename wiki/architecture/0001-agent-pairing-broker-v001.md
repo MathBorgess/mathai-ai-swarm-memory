@@ -1,5 +1,7 @@
 # ADR 0001 — Agent Pairing Broker v0.0.1
 
+> **Status histórico.** O pairing por chave e aprovação Cloudflare Access desta ADR foi substituído na implantação por GitHub Device Flow no mesmo origin `https://a2a.mathai.com.br`; Access foi removido e os endpoints legados retornam `404`. Para repetir a operação atual, use `docs/operations/install-auth-broker-vps.md` e o runbook da wiki privada `estudos/context-engineering/2026-09-09-a2a-oauth-broker-runbook-vps.md`. Esta ADR é mantida como proveniência do desenho inicial, não como instrução de deploy.
+
 **Status:** accepted for foundation
 
 ## Contexto

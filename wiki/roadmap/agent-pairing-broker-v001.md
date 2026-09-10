@@ -1,5 +1,7 @@
 # Roadmap — Agent Pairing Broker v0.0.1
 
+> **Status histórico.** Este roadmap descreve a hipótese de pairing por chave e Cloudflare Access. A implantação atual usa GitHub Device Flow no origin único `https://a2a.mathai.com.br`; não execute os itens abaixo como plano de deploy. A referência atual é `docs/operations/install-auth-broker-vps.md` e o runbook correspondente no `mathai-wiki`.
+
 ## Fundação — concluída neste change set
 
 - [x] Reposicionamento para `mathai-context-engine`.
