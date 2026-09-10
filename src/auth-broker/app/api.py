@@ -72,10 +72,47 @@ def create_app(*, database_path: str | Path, audience: str,
         raise ValueError("Audience and agent lifetime of at most one hour are required")
     app = FastAPI(title="Agent Pairing Broker", version="0.0.1")
     session_lifetime = session_lifetime or agent_lifetime
+    device_transactions: dict[str, tuple[str, datetime]] = {}
 
     @app.get("/.well-known/agent-card.json")
     def agent_card():
         return build_agent_card(public_url)
+
+    @app.post("/v1/oauth/github/device/start")
+    def device_start(body: bytes = Depends(_body)):
+        if github_oauth is None:
+            raise HTTPException(503, "GitHub OAuth is not configured")
+        try:
+            payload = github_oauth.start_device()
+            transaction = secrets.token_urlsafe(32); now = clock()
+            if len(device_transactions) >= 256:
+                device_transactions.pop(next(iter(device_transactions)))
+            device_transactions[transaction] = (payload["device_code"], now + timedelta(minutes=10))
+            return {"transaction": transaction, "user_code": payload["user_code"], "verification_uri": payload["verification_uri"], "expires_in": 600, "interval": payload.get("interval", 5)}
+        except (KeyError, GitHubOAuthError):
+            raise HTTPException(502, "GitHub device flow unavailable") from None
+
+    @app.post("/v1/oauth/github/device/poll")
+    def device_poll(body: bytes = Depends(_body)):
+        if github_oauth is None:
+            raise HTTPException(503, "GitHub OAuth is not configured")
+        try:
+            data = _object(body); transaction = data["transaction"]
+            device_code, expires_at = device_transactions[transaction]
+            if expires_at <= clock():
+                del device_transactions[transaction]; raise ValueError()
+            subject = github_oauth.poll_device(device_code)
+            if subject is None:
+                return {"status": "authorization_pending"}
+            if github_allowed_user_id is None or subject != github_allowed_user_id:
+                del device_transactions[transaction]; raise ValueError()
+            del device_transactions[transaction]
+            token = secrets.token_urlsafe(32); now = clock(); scopes = ("a2a:discover", "a2a:message", "a2a:history")
+            with closing(SqlitePairingStore(database_path)) as store:
+                store.create_session(hashlib.sha256(token.encode()).hexdigest(), subject, scopes, now, now + session_lifetime)
+            return {"access_token": token, "token_type": "Bearer", "scope": " ".join(scopes), "expires_in": int(session_lifetime.total_seconds())}
+        except (KeyError, TypeError, ValueError, GitHubOAuthError):
+            raise HTTPException(403, "GitHub device authorization denied") from None
 
     @app.post("/v1/oauth/github/start")
     def github_start(body: bytes = Depends(_body)):

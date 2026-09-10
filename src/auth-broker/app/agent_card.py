@@ -28,14 +28,14 @@ def build_agent_card(public_url: str = "https://a2a.mathai.com.br") -> dict[str,
             "githubOAuth": {
                 "type": "oauth2",
                 "flows": {
-                    "authorizationCode": {
-                        "authorizationUrl": "https://a2a.mathai.com.br/v1/oauth/github/start",
-                        "tokenUrl": "https://a2a.mathai.com.br/v1/oauth/github/token",
+                    "deviceCode": {
+                        "deviceAuthorizationUrl": "https://a2a.mathai.com.br/v1/oauth/github/device/start",
+                        "tokenUrl": "https://a2a.mathai.com.br/v1/oauth/github/device/poll",
                         "scopes": OAUTH_SCOPES,
                     }
                 },
                 "x-provider": "github",
-                "x-exchange": "broker-owned-start-state-and-code-exchange",
+                "x-exchange": "broker-owned-github-device-flow",
                 "x-token-validation": "https://api.github.com/user",
                 "x-session": "broker-minted-short-lived",
             }

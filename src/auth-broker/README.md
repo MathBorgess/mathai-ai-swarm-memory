@@ -64,3 +64,5 @@ O token de agente termina no broker. O broker emite ou usa sua própria credenci
 ## Operação
 
 O broker só sobe quando todas as variáveis obrigatórias estão presentes; não há valores padrão para segredos. `scripts/setup-vps.sh /caminho/absoluto/auth-broker.env` prepara o ambiente virtual e roda testes sem iniciar o serviço. O procedimento de instalação, CNAME e política Cloudflare Access está em [[docs/operations/install-auth-broker-vps]]. Ele é um guia de preparação: não significa que a VPS ou o Tunnel tenham sido alterados.
+
+Para agentes headless, o contrato publicado usa Device Flow: `/v1/oauth/github/device/start` retorna `verification_uri`, `user_code` e uma transação opaca; o cliente faz poll em `/v1/oauth/github/device/poll` até receber o token A2A do broker. O `device_code` fica somente em memória limitada do processo, por até dez minutos, e nunca é gravado no SQLite. Um harness compatível ainda precisa implementar esse adapter.

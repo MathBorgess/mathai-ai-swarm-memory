@@ -18,12 +18,12 @@ class Hermes:
 def test_card_is_structured_github_oauth_contract():
     card = build_agent_card()
     scheme = card["securitySchemes"]["githubOAuth"]
-    flow = scheme["flows"]["authorizationCode"]
+    flow = scheme["flows"]["deviceCode"]
     assert card["url"] == "https://a2a.mathai.com.br"
     assert scheme["type"] == "oauth2"
     assert scheme["x-provider"] == "github"
-    assert flow["authorizationUrl"] == "https://a2a.mathai.com.br/v1/oauth/github/start"
-    assert flow["tokenUrl"] == "https://a2a.mathai.com.br/v1/oauth/github/token"
+    assert flow["deviceAuthorizationUrl"] == "https://a2a.mathai.com.br/v1/oauth/github/device/start"
+    assert flow["tokenUrl"] == "https://a2a.mathai.com.br/v1/oauth/github/device/poll"
     assert flow["scopes"] == OAUTH_SCOPES
     assert card["security"] == [{"githubOAuth": list(OAUTH_SCOPES)}]
 
