@@ -131,6 +131,8 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/pairing-requests", status_code=201)
     def new_pairing(body: bytes = Depends(_body)):
+        if owner_verifier is None:
+            raise HTTPException(404, "Legacy pairing is disabled")
         try:
             data = _object(body)
             if set(data) != {"public_key"} or not isinstance(data["public_key"], str):
@@ -145,6 +147,8 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/pairing-requests/{request_id}/proof")
     def proof(request_id: str, body: bytes = Depends(_body)):
+        if owner_verifier is None:
+            raise HTTPException(404, "Legacy pairing is disabled")
         try:
             data = _object(body)
             if set(data) != {"challenge", "signature"}:
@@ -159,6 +163,8 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/pairing-requests/{request_id}/approve")
     def approve(request_id: str, request: Request, body: bytes = Depends(_body)):
+        if owner_verifier is None:
+            raise HTTPException(404, "Legacy pairing is disabled")
         try:
             assertion = request.headers.get("cf-access-jwt-assertion", "")
             if not assertion or len(assertion) > 16384:

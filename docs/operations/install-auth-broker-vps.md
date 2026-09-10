@@ -8,7 +8,7 @@ O agente externo usa somente **`https://a2a.mathai.com.br`** e descobre o Agent 
 
 - Agentes não recebem `HERMES_BROKER_TOKEN`. Esse bearer é usado apenas pelo processo broker no salto para Hermes.
 - O SQLite fica fora do clone, com permissões privadas. Não copie banco, `.env` nem logs para GitHub.
-- A aprovação precisa de Cloudflare Access; abertura do pedido, prova da chave e consulta assinada continuam alcançáveis por agentes sem sessão de navegador.
+- Sem Cloudflare Access, o pairing legado fica desativado (os caminhos `/v1/pairing-requests/*` retornam `404`). O fluxo público é somente o GitHub Device Flow do broker.
 - O Device Flow emite somente `a2a:discover`, `a2a:message` e `a2a:history`; não há escopos de projeto, documento, ferramenta ou terceiro.
 
 ## 1. Instalar o código e as dependências
@@ -29,9 +29,6 @@ Crie `/home/box/.mathai-context-engine/auth-broker.env` com modo `600`. Não ver
 ```dotenv
 AUTH_BROKER_DATABASE_PATH=/home/box/.mathai-context-engine/auth-broker.sqlite3
 AUTH_BROKER_AUDIENCE=https://a2a.mathai.com.br
-AUTH_BROKER_CF_ACCESS_ISSUER=https://<team-name>.cloudflareaccess.com
-AUTH_BROKER_CF_ACCESS_AUDIENCE=<access-application-aud-tag>
-AUTH_BROKER_OWNER_EMAIL=<email-do-dono-no-idp>
 HERMES_A2A_URL=http://127.0.0.1:9900
 # OAuth App registrada previamente; nunca comite estes valores.
 GITHUB_OAUTH_CLIENT_ID=...
@@ -40,7 +37,7 @@ GITHUB_ALLOWED_USER_ID=...
 HERMES_BROKER_TOKEN=<token-de-peer-exclusivo-do-broker>
 ```
 
-As sete variáveis são obrigatórias: valor ausente, vazio ou composto só de espaços impede a inicialização. O `AUTH_BROKER_AUDIENCE` precisa ser exatamente a URL que os agentes assinarão nos envelopes. O issuer e o AUD são da aplicação Cloudflare Access, não de um token GitHub.
+As sete variáveis listadas são obrigatórias: valor ausente, vazio ou composto só de espaços impede a inicialização. O `AUTH_BROKER_AUDIENCE` precisa ser exatamente a URL pública do broker. As três variáveis `AUTH_BROKER_CF_ACCESS_*` e `AUTH_BROKER_OWNER_EMAIL` são opcionais e só devem existir juntas se o pairing legado for reativado.
 
 Com o arquivo pronto, execute o bootstrap repetível:
 

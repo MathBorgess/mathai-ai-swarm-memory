@@ -15,11 +15,11 @@ def configured(monkeypatch, tmp_path):
     values = {
         "AUTH_BROKER_DATABASE_PATH": str(tmp_path / "production.sqlite3"),
         "AUTH_BROKER_AUDIENCE": "https://pair.example.test",
-        "AUTH_BROKER_CF_ACCESS_ISSUER": "https://team.cloudflareaccess.com",
-        "AUTH_BROKER_CF_ACCESS_AUDIENCE": "access-app",
-        "AUTH_BROKER_OWNER_EMAIL": "owner@example.test",
         "HERMES_A2A_URL": "https://hermes.example.test/",
         "HERMES_BROKER_TOKEN": "synthetic-server-only",
+        "GITHUB_OAUTH_CLIENT_ID": "synthetic-client-id",
+        "GITHUB_OAUTH_CLIENT_SECRET": "synthetic-client-secret",
+        "GITHUB_ALLOWED_USER_ID": "12345",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -30,8 +30,8 @@ def configured(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("name", [
     "AUTH_BROKER_DATABASE_PATH", "AUTH_BROKER_AUDIENCE",
-    "AUTH_BROKER_CF_ACCESS_ISSUER", "AUTH_BROKER_CF_ACCESS_AUDIENCE",
-    "AUTH_BROKER_OWNER_EMAIL", "HERMES_A2A_URL", "HERMES_BROKER_TOKEN",
+    "HERMES_A2A_URL", "HERMES_BROKER_TOKEN", "GITHUB_OAUTH_CLIENT_ID",
+    "GITHUB_OAUTH_CLIENT_SECRET", "GITHUB_ALLOWED_USER_ID",
 ])
 @pytest.mark.parametrize("value", [None, "", " \t"])
 def test_required_environment_fails_closed(configured, monkeypatch, name, value):
@@ -44,6 +44,9 @@ def test_required_environment_fails_closed(configured, monkeypatch, name, value)
 
 
 def test_production_composition_verifies_owner_and_uses_private_bearer(configured, monkeypatch, owner_keys):
+    monkeypatch.setenv("AUTH_BROKER_CF_ACCESS_ISSUER", "https://team.cloudflareaccess.com")
+    monkeypatch.setenv("AUTH_BROKER_CF_ACCESS_AUDIENCE", "access-app")
+    monkeypatch.setenv("AUTH_BROKER_OWNER_EMAIL", "owner@example.test")
     private, jwk = owner_keys
     monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", lambda self: {"keys": [jwk]})
     captured = []
@@ -80,3 +83,9 @@ def test_factory_rechecks_environment(configured, monkeypatch):
     monkeypatch.delenv("HERMES_BROKER_TOKEN")
     with pytest.raises(RuntimeError, match="HERMES_BROKER_TOKEN"):
         main.build_app_from_environment()
+
+
+def test_without_cloudflare_access_starts_and_disables_legacy_pairing(configured):
+    main = importlib.import_module("app.main")
+    with TestClient(main.app) as client:
+        assert client.post("/v1/pairing-requests", json={"public_key": "ignored"}).status_code == 404
