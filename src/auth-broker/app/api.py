@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import re
+import secrets
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,8 +24,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import Depends, FastAPI, HTTPException, Request
 
 from app.adapters.hermes import HermesClient, HermesError
+from app.adapters.github import GitHubOAuth, GitHubOAuthError
 from app.adapters.owner import OwnerAssertionVerifier, OwnerAuthenticationError
 from app.adapters.sqlite import SqlitePairingStore
+from app.agent_card import build_agent_card
 from app.domain.pairing import create_request
 
 
@@ -59,13 +62,77 @@ async def _body(request: Request) -> bytes:
 def create_app(*, database_path: str | Path, audience: str,
                owner_verifier: OwnerAssertionVerifier, hermes: HermesClient,
                clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-               agent_lifetime: timedelta = timedelta(hours=1)) -> FastAPI:
+               agent_lifetime: timedelta = timedelta(hours=1),
+               public_url: str = "https://a2a.mathai.com.br",
+               github_oauth: GitHubOAuth | None = None,
+               session_lifetime: timedelta | None = None,
+               github_allowed_user_id: str | None = None) -> FastAPI:
     if not audience or not timedelta(0) < agent_lifetime <= timedelta(hours=1):
         raise ValueError("Audience and agent lifetime of at most one hour are required")
     app = FastAPI(title="Agent Pairing Broker", version="0.0.1")
+    session_lifetime = session_lifetime or agent_lifetime
+    device_transactions: dict[str, tuple[str, datetime, datetime, int]] = {}
+
+    @app.get("/.well-known/agent-card.json")
+    def agent_card():
+        return build_agent_card(public_url)
+
+    @app.post("/v1/oauth/github/device/start")
+    def device_start(body: bytes = Depends(_body)):
+        if github_oauth is None:
+            raise HTTPException(503, "GitHub OAuth is not configured")
+        try:
+            payload = github_oauth.start_device()
+            transaction = secrets.token_urlsafe(32); now = clock()
+            if len(device_transactions) >= 256:
+                device_transactions.pop(next(iter(device_transactions)))
+            interval = max(5, int(payload.get("interval", 5)))
+            device_transactions[transaction] = (payload["device_code"], now + timedelta(minutes=10), now, interval)
+            return {"device_code": transaction, "user_code": payload["user_code"], "verification_uri": payload["verification_uri"], "expires_in": 600, "interval": interval}
+        except (KeyError, GitHubOAuthError):
+            raise HTTPException(502, "GitHub device flow unavailable") from None
+
+    @app.post("/v1/oauth/github/device/poll")
+    def device_poll(body: bytes = Depends(_body)):
+        if github_oauth is None:
+            raise HTTPException(503, "GitHub OAuth is not configured")
+        try:
+            data = _object(body)
+            if set(data) != {"device_code", "grant_type"} or data["grant_type"] != "urn:ietf:params:oauth:grant-type:device_code":
+                raise ValueError()
+            transaction = data["device_code"]
+            device_code, expires_at, next_poll, interval = device_transactions[transaction]
+            if expires_at <= clock():
+                del device_transactions[transaction]; raise ValueError()
+            if clock() < next_poll:
+                return {"status": "authorization_pending", "retry_after": int((next_poll - clock()).total_seconds()) + 1}
+            subject = github_oauth.poll_device(device_code)
+            if subject is None:
+                device_transactions[transaction] = (device_code, expires_at, clock() + timedelta(seconds=interval), interval)
+                return {"status": "authorization_pending"}
+            if github_allowed_user_id is None or subject != github_allowed_user_id:
+                del device_transactions[transaction]; raise ValueError()
+            del device_transactions[transaction]
+            token = secrets.token_urlsafe(32); now = clock(); scopes = ("a2a:discover", "a2a:message", "a2a:history")
+            with closing(SqlitePairingStore(database_path)) as store:
+                store.create_session(hashlib.sha256(token.encode()).hexdigest(), subject, scopes, now, now + session_lifetime)
+            return {"access_token": token, "token_type": "Bearer", "scope": " ".join(scopes), "expires_in": int(session_lifetime.total_seconds())}
+        except (KeyError, TypeError, ValueError, GitHubOAuthError):
+            raise HTTPException(403, "GitHub device authorization denied") from None
+
+    @app.post("/v1/oauth/revoke")
+    def revoke_session(request: Request):
+        token = request.headers.get("authorization", "")
+        if not token.startswith("Bearer "):
+            raise HTTPException(401, "Missing session")
+        with closing(SqlitePairingStore(database_path)) as store:
+            store.revoke_session(hashlib.sha256(token[7:].encode()).hexdigest(), clock())
+        return {"status": "revoked"}
 
     @app.post("/v1/pairing-requests", status_code=201)
     def new_pairing(body: bytes = Depends(_body)):
+        if owner_verifier is None:
+            raise HTTPException(404, "Legacy pairing is disabled")
         try:
             data = _object(body)
             if set(data) != {"public_key"} or not isinstance(data["public_key"], str):
@@ -80,6 +147,8 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/pairing-requests/{request_id}/proof")
     def proof(request_id: str, body: bytes = Depends(_body)):
+        if owner_verifier is None:
+            raise HTTPException(404, "Legacy pairing is disabled")
         try:
             data = _object(body)
             if set(data) != {"challenge", "signature"}:
@@ -94,6 +163,8 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/pairing-requests/{request_id}/approve")
     def approve(request_id: str, request: Request, body: bytes = Depends(_body)):
+        if owner_verifier is None:
+            raise HTTPException(404, "Legacy pairing is disabled")
         try:
             assertion = request.headers.get("cf-access-jwt-assertion", "")
             if not assertion or len(assertion) > 16384:
@@ -110,6 +181,20 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/context/query")
     def query(request: Request, body: bytes = Depends(_body)):
+        authorization = request.headers.get("authorization", "")
+        if authorization.startswith("Bearer ") and not request.headers.get("x-agent-envelope"):
+            token = authorization[7:]
+            try:
+                data = _object(body)
+                if set(data) != {"query"} or not isinstance(data["query"], str) or not data["query"].strip():
+                    raise ValueError()
+                with closing(SqlitePairingStore(database_path)) as store:
+                    session = store.active_session(hashlib.sha256(token.encode()).hexdigest(), clock())
+                if session is None or "a2a:message" not in session.scopes:
+                    raise ValueError()
+                return hermes.query_as_broker(agent_id="github:" + session.subject, query=data["query"])
+            except (ValueError, TypeError, HermesError):
+                raise HTTPException(403, "Agent authentication denied") from None
         try:
             encoded = request.headers.get("x-agent-envelope", "")
             signature = request.headers.get("x-agent-signature", "")

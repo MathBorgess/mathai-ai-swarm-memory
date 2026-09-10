@@ -12,14 +12,16 @@ Base privada para a camada de contexto dos agentes do dono. Ela mantém a identi
 
 ```text
 src/hermes-identity/  identidade sincronizada e script de compatibilidade
-src/auth-broker/      contrato do broker de pareamento A2A v0.0.1
+src/auth-broker/      broker A2A com GitHub Device Flow e proxy privado para Hermes
 wiki/                 decisões, arquitetura e roadmap deste repositório
 docs/                 plano de implementação executável
 ```
 
 ## Estado atual
 
-O sync de identidade funciona. O broker v0.0.1 já tem implementação e testes locais; a instalação na VPS e a configuração Cloudflare Access ainda são uma operação explícita, não uma consequência de dar merge. Siga o [[docs/operations/install-auth-broker-vps]] para preparar esse ambiente.
+O sync de identidade funciona. O broker OAuth está implantado: o Agent Card público em `https://a2a.mathai.com.br` inicia GitHub Device Flow e o broker encaminha a mensagem autenticada a Hermes apenas pelo loopback privado. O fluxo antigo de pairing por Cloudflare Access está desativado; seus endpoints retornam `404` quando as variáveis de Access não estão configuradas.
+
+Para repetir, auditar ou recuperar a instalação da VPS, comece por [docs/operations/install-auth-broker-vps.md](docs/operations/install-auth-broker-vps.md). O procedimento de operação já validado, incluindo staging, promoção, restart e cleanup, está na wiki privada: `MathBorgess/mathai-wiki` → `estudos/context-engineering/2026-09-09-a2a-oauth-broker-runbook-vps.md`. Nenhum dos dois documentos contém valores de segredos.
 
 O remoto GitHub é `MathBorgess/mathai-context-engine`. Clones e links locais podem manter o diretório `~/src/hermes-identity`; o bootstrap aponta ao novo remoto e os URLs antigos do GitHub permanecem redirecionados durante a transição.
 

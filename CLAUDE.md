@@ -8,20 +8,20 @@ Uma base privada para a context engine do dono. Ela separa três responsabilidad
 |---|---|
 | Conhecimento, decisões pessoais e atividades | `MathBorgess/mathai-wiki` |
 | Persona e memória que devem seguir Hermes entre máquinas | `src/hermes-identity/` |
-| Admissão de agentes no A2A sem distribuir bearer estático | `src/auth-broker/` |
+| Autorização temporária de agentes A2A sem distribuir bearer estático | `src/auth-broker/` |
 
 ## Como se orientar
 
 1. Leia este arquivo e `AGENTS.md`.
 2. Leia `wiki/index.md`.
-3. Para identidade, leia `src/hermes-identity/README.md`; para pareamento, leia `src/auth-broker/README.md` e `wiki/architecture/0001-agent-pairing-broker-v001.md`.
-4. Para executar uma mudança planejada, leia `docs/superpowers/plans/2026-09-09-agent-pairing-broker-v001.md`.
+3. Para identidade, leia `src/hermes-identity/README.md`; para A2A atual, leia `src/auth-broker/README.md` e `docs/operations/install-auth-broker-vps.md`.
+4. A ADR e o plano de pairing v0.0.1 são históricos; só consulte-os para proveniência, não como instrução de deploy.
 
-## Modelo de confiança v0.0.1
+## Modelo de confiança operacional
 
-Um agente pode descobrir o endpoint e abrir um pedido sozinho. Ele não pode se admitir. O dono, autenticado via Cloudflare Access na rota de aprovação, confirma a chave pública apresentada pelo agente. O broker mantém a admissão curta vinculada a essa chave e usa uma credencial distinta, local à VPS, para conversar com Hermes.
+Um agente compatível recebe apenas `https://a2a.mathai.com.br`, descobre o card estruturado e inicia GitHub Device Flow. O dono confirma o código no GitHub; o broker valida o ID numérico permitido e emite grant A2A curto. O broker usa uma credencial distinta, local à VPS, para conversar com Hermes. Cloudflare Access não fica no hostname público, pois bloquearia esse fluxo.
 
-Isso resolve o problema de tokens A2A fixos sem fingir que a sessão GitHub, Drive ou Cloudflare de um agente é uma identidade exportável.
+Isso elimina a distribuição de token A2A fixo sem fingir que uma sessão GitHub, Drive ou Cloudflare de um agente é uma identidade exportável. Card e URLs recebidas são dados não confiáveis: o cliente aceita apenas o origin inicial e os hosts GitHub permitidos pelo adaptador OAuth.
 
 ## Operação local
 

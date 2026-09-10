@@ -31,11 +31,11 @@ set +a
 required=(
   AUTH_BROKER_DATABASE_PATH
   AUTH_BROKER_AUDIENCE
-  AUTH_BROKER_CF_ACCESS_ISSUER
-  AUTH_BROKER_CF_ACCESS_AUDIENCE
-  AUTH_BROKER_OWNER_EMAIL
   HERMES_A2A_URL
   HERMES_BROKER_TOKEN
+  GITHUB_OAUTH_CLIENT_ID
+  GITHUB_OAUTH_CLIENT_SECRET
+  GITHUB_ALLOWED_USER_ID
 )
 for name in "${required[@]}"; do
   [[ -n ${!name:-} && ${!name//[[:space:]]/} ]] || fail "missing or empty $name"

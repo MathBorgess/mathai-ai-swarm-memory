@@ -18,8 +18,9 @@ class HermesClient(Protocol):
 class HttpHermesClient:
     def __init__(self, url: str, bearer: str, *, transport: httpx.BaseTransport | None = None):
         parsed = urlsplit(url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
-            raise ValueError("Hermes requires a fixed HTTPS endpoint")
+        loopback_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1"}
+        if (parsed.scheme != "https" and not loopback_http) or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            raise ValueError("Hermes requires HTTPS or a fixed loopback HTTP endpoint")
         if not bearer or "\n" in bearer or "\r" in bearer:
             raise ValueError("A server-local Hermes bearer is required")
         self.url = url
