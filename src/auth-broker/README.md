@@ -38,6 +38,13 @@ ideal é: token GitHub curto e escopo mínimo, sessão broker audience-bound e
 expiração/revogação, associação a uma chave efêmera do cliente (DPoP quando
 suportado), e credencial Hermes separada apenas no ambiente privado.
 
+Em produção, configure `GITHUB_OAUTH_CLIENT_ID` e `GITHUB_OAUTH_CLIENT_SECRET`
+no ambiente do broker. `/v1/oauth/github/token` troca o código, valida
+`GET https://api.github.com/user`, descarta o token upstream e emite um token
+opaco do broker com o TTL padrão de uma hora. O cliente deve pré-registrar seu
+`redirect_uri`; callbacks arbitrários devem ser rejeitados na configuração de
+produção.
+
 ## Persistência inicial
 
 SQLite na VPS, em volume privado e com backup operacional. O banco contém somente `pairing_requests`, `agents`, `audit_events` e hashes de nonces já consumidos. Não armazena desafios em claro, assinaturas, consultas, respostas ou tokens.

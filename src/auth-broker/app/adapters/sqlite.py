@@ -29,6 +29,13 @@ class ActiveAgent:
     approved_at: datetime
     expires_at: datetime
 
+@dataclass(frozen=True)
+class BrokerSession:
+    token_hash: str
+    subject: str
+    scopes: tuple[str, ...]
+    expires_at: datetime
+
 
 def _aware(at: datetime) -> None:
     if at.utcoffset() is None:
@@ -71,6 +78,10 @@ class SqlitePairingStore:
                 nonce_hash TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 PRIMARY KEY (agent_id, nonce_hash)
+            );
+            CREATE TABLE IF NOT EXISTS broker_sessions (
+                token_hash TEXT PRIMARY KEY, subject TEXT NOT NULL, scopes TEXT NOT NULL,
+                issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT
             );
             CREATE TRIGGER IF NOT EXISTS audit_events_no_update
                 BEFORE UPDATE ON audit_events
@@ -184,6 +195,20 @@ class SqlitePairingStore:
                     "SELECT request_id FROM agents WHERE id = ?", (agent_id,)
                 ).fetchone()
                 self._audit("agent_revoked", at, row["request_id"], agent_id)
+
+    def create_session(self, token_hash: str, subject: str, scopes: tuple[str, ...], issued_at: datetime, expires_at: datetime) -> None:
+        _aware(issued_at); _aware(expires_at)
+        if not token_hash or not subject or not scopes or expires_at <= issued_at:
+            raise ValueError("Invalid broker session")
+        with self.connection:
+            self.connection.execute("INSERT INTO broker_sessions VALUES (?, ?, ?, ?, ?, NULL)", (token_hash, subject, " ".join(scopes), issued_at.isoformat(), expires_at.isoformat()))
+
+    def active_session(self, token_hash: str, now: datetime) -> BrokerSession | None:
+        _aware(now)
+        row = self.connection.execute("SELECT * FROM broker_sessions WHERE token_hash = ? AND revoked_at IS NULL", (token_hash,)).fetchone()
+        if row is None or not datetime.fromisoformat(row["issued_at"]) <= now < datetime.fromisoformat(row["expires_at"]):
+            return None
+        return BrokerSession(row["token_hash"], row["subject"], tuple(row["scopes"].split()), datetime.fromisoformat(row["expires_at"]))
 
     def consume_nonce(self, agent_id: str, nonce: bytes, now: datetime, expires_at: datetime) -> None:
         """Atomically reject replay; only a nonce digest survives this call."""

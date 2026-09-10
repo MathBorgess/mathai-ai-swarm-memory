@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import re
+import secrets
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import Depends, FastAPI, HTTPException, Request
 
 from app.adapters.hermes import HermesClient, HermesError
+from app.adapters.github import GitHubOAuth, GitHubOAuthError
 from app.adapters.owner import OwnerAssertionVerifier, OwnerAuthenticationError
 from app.adapters.sqlite import SqlitePairingStore
 from app.agent_card import build_agent_card
@@ -61,14 +63,37 @@ def create_app(*, database_path: str | Path, audience: str,
                owner_verifier: OwnerAssertionVerifier, hermes: HermesClient,
                clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                agent_lifetime: timedelta = timedelta(hours=1),
-               public_url: str = "https://a2a.mathai.com.br") -> FastAPI:
+               public_url: str = "https://a2a.mathai.com.br",
+               github_oauth: GitHubOAuth | None = None,
+               session_lifetime: timedelta | None = None) -> FastAPI:
     if not audience or not timedelta(0) < agent_lifetime <= timedelta(hours=1):
         raise ValueError("Audience and agent lifetime of at most one hour are required")
     app = FastAPI(title="Agent Pairing Broker", version="0.0.1")
+    session_lifetime = session_lifetime or agent_lifetime
 
     @app.get("/.well-known/agent-card.json")
     def agent_card():
         return build_agent_card(public_url)
+
+    @app.post("/v1/oauth/github/token")
+    def github_token(body: bytes = Depends(_body)):
+        if github_oauth is None:
+            raise HTTPException(503, "GitHub OAuth is not configured")
+        try:
+            data = _object(body)
+            if set(data) != {"code", "redirect_uri", "scope"} or not all(isinstance(data[k], str) for k in data):
+                raise ValueError()
+            requested = tuple(data["scope"].split())
+            if set(requested) != {"a2a:discover", "a2a:message", "a2a:history"}:
+                raise ValueError()
+            subject = github_oauth.exchange_and_identify(data["code"], data["redirect_uri"])
+            token = secrets.token_urlsafe(32)
+            now = clock()
+            with closing(SqlitePairingStore(database_path)) as store:
+                store.create_session(hashlib.sha256(token.encode()).hexdigest(), subject, requested, now, now + session_lifetime)
+            return {"access_token": token, "token_type": "Bearer", "scope": " ".join(requested), "expires_in": int(session_lifetime.total_seconds())}
+        except (ValueError, TypeError, GitHubOAuthError):
+            raise HTTPException(403, "GitHub OAuth denied") from None
 
     @app.post("/v1/pairing-requests", status_code=201)
     def new_pairing(body: bytes = Depends(_body)):
@@ -116,6 +141,20 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/context/query")
     def query(request: Request, body: bytes = Depends(_body)):
+        authorization = request.headers.get("authorization", "")
+        if authorization.startswith("Bearer ") and not request.headers.get("x-agent-envelope"):
+            token = authorization[7:]
+            try:
+                data = _object(body)
+                if set(data) != {"query"} or not isinstance(data["query"], str) or not data["query"].strip():
+                    raise ValueError()
+                with closing(SqlitePairingStore(database_path)) as store:
+                    session = store.active_session(hashlib.sha256(token.encode()).hexdigest(), clock())
+                if session is None or "a2a:message" not in session.scopes:
+                    raise ValueError()
+                return hermes.query_as_broker(agent_id="github:" + session.subject, query=data["query"])
+            except (ValueError, TypeError, HermesError):
+                raise HTTPException(403, "Agent authentication denied") from None
         try:
             encoded = request.headers.get("x-agent-envelope", "")
             signature = request.headers.get("x-agent-signature", "")
