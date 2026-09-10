@@ -174,6 +174,11 @@ def test_hermes_adapter_uses_only_server_credential():
     assert payload["params"]["message"]["parts"] == [{"kind": "text", "text": "hello"}]
 
 
+def test_hermes_adapter_accepts_loopback_http_for_private_gateway():
+    adapter = HttpHermesClient("http://127.0.0.1:9900", "server-local-only")
+    assert adapter.url == "http://127.0.0.1:9900"
+
+
 @pytest.fixture
 def owner_keys():
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
