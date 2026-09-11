@@ -17,20 +17,22 @@ com o Agente A.
 
 Nada neste pacote chama Hermes. Grant `ctx:read` não abre o proxy A2A.
 
-## Wiring pendente com A
+## Wiring com A (feito na rodada de integração)
 
-A deve, numa rodada posterior:
+`main.py` constrói o `ContextStore` a partir de `AUTH_BROKER_CONTEXT_SQLITE` e
+passa `context_router_factory` para `create_app`. `api.py` chama a factory com o
+verificador DPoP real e delega `/v1/context/query` e `/v1/context/resolve` para
+os endpoints deste pacote — delegação, não `include_router`, porque `query`
+continua despachando sessão Bearer legada para Hermes e porque `authorize` pode
+rodar **uma vez só** por request (dois consumos do mesmo `jti` viram replay).
 
-1. Construir o verificador DPoP/JWT que devolve o mapping
-   `{principal_id, workspace_id, scopes, classifications, family_id, expires_at}`.
-2. Incluir o router só depois desse callable existir:
-   `app.include_router(build_router(authorize=verify, store=context_store))`.
-3. Não anunciar `query`/`resolve` em capabilities enquanto o store/authorize
-   não estiverem instalados (503 explícito, sem fallback para Hermes).
-4. Não popular o mapping a partir do JSON do chamador.
+Sem a variável de ambiente o store não existe, capabilities não anuncia
+`query`/`resolve` e as rotas respondem 503. Grant `ctx:read` continua sem abrir
+o proxy A2A.
 
-Testes desta fatia usam `authorize` fake. Isso prova o filtro de conteúdo, não
-a integração OAuth.
+Os testes desta fatia usam `authorize` fake — isso prova o filtro de conteúdo,
+não a autenticação. A prova ponta a ponta é `tests/test_integration_swarm.py`,
+que emite token pelo Device Flow e consulta com prova DPoP verificada.
 
 ## Manifesto
 
@@ -150,7 +152,5 @@ pessoal nestes testes.
 
 ## Fora desta fatia
 
-- Ligar o router em `api.py` / capabilities (Agente A)
-- MCP cliente (Agente B)
-- Propose T2 (Agente D)
-- Deploy, merge em `main`, exposição de Hermes, cache compartilhado, Graphiti
+- Deploy, exposição de Hermes, cache compartilhado, Graphiti, embeddings
+- Ingestão automática do vault pessoal

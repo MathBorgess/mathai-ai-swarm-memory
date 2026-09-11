@@ -5,8 +5,8 @@ POST /v1/context/query accepts three authentication modes:
 - Legacy opaque Bearer session from GitHub Device Flow, limited to a2a scopes
   and the Hermes proxy.
 - DPoP-bound swarm access tokens. Those never fall through to Hermes; ctx
-  grants do not open the proxy. Query/resolve/propose return 503 until C/D
-  routers are registered in a later integration round.
+  grants do not open the proxy. Query/resolve/propose delegate to the C/D
+  routers when their factories are supplied, and return 503 otherwise.
 """
 
 from __future__ import annotations
@@ -71,6 +71,22 @@ async def _body(request: Request) -> bytes:
         if len(result) > 16384:
             raise HTTPException(413, "Request body too large")
     return bytes(result)
+
+
+def _mounted(router, path: str):
+    """Endpoint of a C/D router, called directly so authorize() runs exactly once.
+
+    Delegation instead of include_router: /v1/context/query must keep dispatching
+    legacy Bearer sessions to Hermes, and a mounted route would shadow that. The
+    endpoints take (request, body) with the same 415/413 contract as _body, so the
+    DPoP proof is consumed by the router, never twice.
+    """
+    if router is None:
+        return None
+    for route in router.routes:
+        if getattr(route, "path", None) == path and "POST" in getattr(route, "methods", ()):
+            return route.endpoint
+    raise RuntimeError(f"Router does not expose POST {path}")
 
 
 def _oauth_error(error: str, status: int = 400, *, headers: dict[str, str] | None = None) -> JSONResponse:
@@ -232,6 +248,11 @@ def create_app(*, database_path: str | Path, audience: str,
     app.state.authorize = authorize
     app.state.context_router_factory = context_router_factory
     app.state.proposal_router_factory = proposal_router_factory
+    context_router = context_router_factory(authorize=authorize) if context_installed else None
+    proposal_router = proposal_router_factory(authorize=authorize) if proposal_installed else None
+    context_query = _mounted(context_router, "/v1/context/query")
+    context_resolve = _mounted(context_router, "/v1/context/resolve")
+    proposal_propose = _mounted(proposal_router, "/v1/context/propose")
 
     @app.get("/.well-known/agent-card.json")
     def agent_card():
@@ -464,6 +485,8 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/context/resolve")
     def resolve(request: Request, body: bytes = Depends(_body)):
+        if context_resolve is not None:
+            return context_resolve(request, body)
         mapping = authorize(request)
         if not any(scope.startswith("ctx:read:") for scope in mapping["scopes"]):
             raise HTTPException(403, "Operation is outside the granted scope")
@@ -471,6 +494,8 @@ def create_app(*, database_path: str | Path, audience: str,
 
     @app.post("/v1/context/propose")
     def propose(request: Request, body: bytes = Depends(_body)):
+        if proposal_propose is not None:
+            return proposal_propose(request, body)
         mapping = authorize(request)
         if not any(scope.startswith("ctx:propose:") for scope in mapping["scopes"]):
             raise HTTPException(403, "Operation is outside the granted scope")
@@ -530,6 +555,8 @@ def create_app(*, database_path: str | Path, audience: str,
     def query(request: Request, body: bytes = Depends(_body)):
         authorization = request.headers.get("authorization", "")
         if authorization.startswith("DPoP ") or request.headers.get("dpop"):
+            if context_query is not None:
+                return context_query(request, body)
             mapping = authorize(request)
             if not any(scope.startswith("ctx:read:") for scope in mapping["scopes"]):
                 raise HTTPException(403, "Operation is outside the granted scope")

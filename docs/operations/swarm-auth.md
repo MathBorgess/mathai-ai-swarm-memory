@@ -98,13 +98,43 @@ Presenting the immediate predecessor (concurrent retry) returns
 `invalid_grant` without revoking. Presenting an older generation revokes the
 family.
 
-## Wiring still owned by a later integration round
+## Wiring of the C/D routers
 
-`create_app(..., context_router_factory=, proposal_router_factory=)` accepts
-C/D factories and exposes `app.state.authorize`. `authorize(request)` returns
-`principal_id`, `workspace_id`, `scopes`, `classifications`, `family_id`,
-`expires_at` from a verified DPoP access token. This PR does not mount those
-routers and does not announce query/resolve/propose in capabilities.
+`create_app(..., context_router_factory=, proposal_router_factory=)` takes the
+C/D factories, each called once as `factory(authorize=authorize)`.
+`authorize(request)` returns `principal_id`, `workspace_id`, `scopes`,
+`classifications`, `family_id`, `expires_at` from a verified DPoP access token,
+never from the caller's JSON.
+
+`api.py` delegates to the mounted endpoints instead of `include_router`:
+`/v1/context/query` has to keep dispatching legacy Bearer sessions to Hermes,
+and a mounted route would shadow that branch. Delegation also keeps
+`authorize()` running exactly once per request — calling it in `api.py` and
+again inside the router would consume the same DPoP `jti` twice and self-reject
+as a replay.
+
+`/v1/context/capabilities` lists `query`/`resolve` only with a context factory
+and `propose` only with a proposal factory. Without them the routes answer 503,
+and no ctx grant ever opens the Hermes proxy.
+
+`main.py` installs each package from configuration, never by default:
+
+```text
+AUTH_BROKER_CONTEXT_SQLITE=/var/lib/auth-broker/context.sqlite3
+
+AUTH_BROKER_PROPOSAL_SQLITE=/var/lib/auth-broker/proposals.sqlite3
+AUTH_BROKER_PROPOSAL_REPO=owner/discard-t2-inbox
+AUTH_BROKER_PROPOSAL_BASE_REF=t2
+AUTH_BROKER_PROPOSAL_GITHUB_TOKEN=<dedicated write credential>
+```
+
+The context manifest is ingested out of band by the operator; the broker
+process never indexes a vault. A partially configured proposal block is a
+startup error, not a permissive fallback.
+
+`app/context/query.py` checks `expires_at` against the wall clock, so the
+broker's injected `clock` does not reach it. That only matters to tests: the
+integration smoke runs on a live clock instead of a frozen one.
 
 ## Limits
 

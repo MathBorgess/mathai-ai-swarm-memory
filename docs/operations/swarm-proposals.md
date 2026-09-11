@@ -36,7 +36,8 @@ or any vault that holds T1/T0 notes.
 | Prefix | Closed: `pesquisa/tcc/inbox`. The adapter rejects any other prefix |
 | Host | `https://api.github.com` only. Redirects are denied |
 
-Suggested env names for the later A wiring (not read by this package today):
+`main.py` reads these on startup; any subset present but incomplete is a
+startup error, and all four absent simply leaves propose uninstalled:
 
 ```text
 AUTH_BROKER_PROPOSAL_GITHUB_TOKEN
@@ -50,15 +51,18 @@ If the token is missing, the factory receives `github=None` and propose returns
 
 SQLite is local to the VPS, like the pairing store. Do not commit the database.
 
-## Wiring still owned by A/B
+## Wiring (done in the integration round)
 
-1. Agent A registers `app.include_router(build_router(authorize=..., store=..., github=..., repository=...))`
-   using the DPoP verifier. Legacy pairing sessions and `a2a:message` must not
-   gain `ctx:propose:*`.
-2. Agent B's MCP client calls this route with `Idempotency-Key` and must not
-   send path, branch, repo, or GitHub credentials.
-3. Until that wiring exists, the route is absent from `api.py` / `main.py` on
-   purpose. Features stay disabled rather than falling back to Hermes.
+`main.py` builds the store, repository and HTTP adapter from the variables
+above and hands `create_app` a `proposal_router_factory`. `api.py` calls it with
+the DPoP verifier and delegates `POST /v1/context/propose` to this package.
+Legacy pairing sessions and `a2a:message` never gain `ctx:propose:*`, and
+`authorize` runs once per request so the DPoP proof is not consumed twice.
+
+Without the credential the route stays uninstalled: capabilities omits
+`propose` and the endpoint answers 503 rather than inventing a pull-request URL.
+Agent B's MCP client calls the route with `Idempotency-Key` and sends no path,
+branch, repo or GitHub credential.
 
 ## Smoke (opt-in, discard repo only)
 

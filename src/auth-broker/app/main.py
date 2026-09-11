@@ -10,6 +10,10 @@ from app.adapters.hermes import HttpHermesClient
 from app.adapters.github import HttpGitHubOAuth
 from app.adapters.owner import CloudflareAccessVerifier
 from app.api import create_app
+from app.context import ContextStore
+from app.context import build_router as build_context_router
+from app.proposals import HttpProposalGitHub, ProposalRepository, ProposalStore
+from app.proposals import build_router as build_proposal_router
 
 
 def require_env(name: str) -> str:
@@ -64,6 +68,51 @@ def build_app_from_environment() -> FastAPI:
         workspace_id=workspace_id,
         public_url=public_url,
         access_token_lifetime=access_token_lifetime,
+        context_router_factory=optional_context_factory(),
+        proposal_router_factory=optional_proposal_factory(),
+    )
+
+
+def optional_context_factory():
+    """S3 query/resolve, installed only when the operator points at an indexed store.
+
+    The manifest is ingested out of band by the operator; nothing here indexes
+    a vault. Without the path the routes stay 503 and capabilities omit them.
+    """
+    path = os.environ.get("AUTH_BROKER_CONTEXT_SQLITE", "").strip()
+    if not path:
+        return None
+    store = ContextStore(path)
+    return lambda *, authorize: build_context_router(authorize=authorize, store=store)
+
+
+def optional_proposal_factory():
+    """S4 propose, installed only with a dedicated GitHub write credential.
+
+    That credential is separate from the Device Flow app: a broker access token
+    never reaches the writer. Missing any part is a configuration error, not a
+    permissive fallback.
+    """
+    names = (
+        "AUTH_BROKER_PROPOSAL_SQLITE",
+        "AUTH_BROKER_PROPOSAL_REPO",
+        "AUTH_BROKER_PROPOSAL_BASE_REF",
+        "AUTH_BROKER_PROPOSAL_GITHUB_TOKEN",
+    )
+    values = {name: os.environ.get(name, "").strip() for name in names}
+    if not any(values.values()):
+        return None
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise RuntimeError(f"Proposal configuration is incomplete: {', '.join(missing)}")
+    owner, _, name = values["AUTH_BROKER_PROPOSAL_REPO"].partition("/")
+    if not owner or not name:
+        raise RuntimeError("AUTH_BROKER_PROPOSAL_REPO must be owner/name")
+    repository = ProposalRepository(owner=owner, name=name, base_ref=values["AUTH_BROKER_PROPOSAL_BASE_REF"])
+    store = ProposalStore(values["AUTH_BROKER_PROPOSAL_SQLITE"])
+    github = HttpProposalGitHub(repository, values["AUTH_BROKER_PROPOSAL_GITHUB_TOKEN"])
+    return lambda *, authorize: build_proposal_router(
+        authorize=authorize, store=store, github=github, repository=repository,
     )
 
 
