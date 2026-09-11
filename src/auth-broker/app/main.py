@@ -1,6 +1,8 @@
 """Uvicorn entry point: required local configuration, production adapters only."""
 
 import os
+from datetime import timedelta
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -41,6 +43,16 @@ def build_app_from_environment() -> FastAPI:
     github_client_id = require_env("GITHUB_OAUTH_CLIENT_ID")
     github_client_secret = require_env("GITHUB_OAUTH_CLIENT_SECRET")
     github_allowed_user_id = require_env("GITHUB_ALLOWED_USER_ID")
+    workspace_id = os.environ.get("AUTH_BROKER_WORKSPACE_ID", "").strip() or None
+    public_url = os.environ.get("AUTH_BROKER_PUBLIC_URL", "").strip() or "https://a2a.mathai.com.br"
+    token_signing_key = _optional_signing_key()
+    lifetime_raw = os.environ.get("AUTH_BROKER_ACCESS_TOKEN_LIFETIME_SECONDS", "").strip()
+    access_token_lifetime = timedelta(minutes=5)
+    if lifetime_raw:
+        seconds = int(lifetime_raw)
+        if not 0 < seconds <= 3600:
+            raise RuntimeError("AUTH_BROKER_ACCESS_TOKEN_LIFETIME_SECONDS must be between 1 and 3600")
+        access_token_lifetime = timedelta(seconds=seconds)
     return create_app(
         database_path=database_path,
         audience=audience,
@@ -48,7 +60,24 @@ def build_app_from_environment() -> FastAPI:
         hermes=HttpHermesClient(hermes_url, hermes_bearer),
         github_oauth=HttpGitHubOAuth(github_client_id, github_client_secret),
         github_allowed_user_id=github_allowed_user_id,
+        token_signing_key=token_signing_key,
+        workspace_id=workspace_id,
+        public_url=public_url,
+        access_token_lifetime=access_token_lifetime,
     )
+
+
+def _optional_signing_key() -> str | None:
+    path = os.environ.get("AUTH_BROKER_JWT_SIGNING_KEY_PATH", "").strip()
+    inline = os.environ.get("AUTH_BROKER_JWT_SIGNING_KEY", "").strip()
+    if path and inline:
+        raise RuntimeError("Set only one of AUTH_BROKER_JWT_SIGNING_KEY or AUTH_BROKER_JWT_SIGNING_KEY_PATH")
+    if path:
+        pem = Path(path).read_text()
+        if not pem.strip():
+            raise RuntimeError("AUTH_BROKER_JWT_SIGNING_KEY_PATH is empty")
+        return pem
+    return inline or None
 
 
 app = build_app_from_environment()
