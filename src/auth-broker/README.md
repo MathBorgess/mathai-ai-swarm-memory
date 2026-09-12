@@ -6,13 +6,15 @@ O broker admite agentes do dono no gateway A2A sem entregar a eles o bearer est�
 
 - Agent Card público em `/.well-known/agent-card.json`, com OAuth estruturado e escopos `a2a:discover`, `a2a:message` e `a2a:history`.
 - GitHub Device Flow para o dono obter um grant temporário do broker.
+- Grants explícitos por principal, CLI `mathai-swarm`, refresh DPoP e capabilities
+  honestas. Memória/proposals ainda não estão ligadas; ver `docs/operations/swarm-auth.md`.
 - Revogação de grant e trilha de auditoria sem segredos de upstream.
 - Proxy autenticado ao gateway Hermes com credencial privada do broker.
 
 ## O que fica fora
 
 - Escopos por ferramenta, projeto, documento ou tenant, inclusive uma policy Hermes restrita por sessão.
-- Compartilhamento com terceiros, delegação de aprovação e DPoP/vinculação do grant à chave do agente.
+- Compartilhamento com terceiros, delegação de aprovação e um grafo ACL.
 - Endpoint/política de retenção para `a2a:history`.
 - Persistir o bearer do Hermes, o token Cloudflare Access ou qualquer token de provedor no SQLite.
 
