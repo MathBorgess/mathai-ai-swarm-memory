@@ -1,0 +1,29 @@
+# Dedicated ask-worker Hermes profile. Generated per job; never an owner ~/.hermes.
+# enabled_toolsets [] is the allowlist (Hermes: None = all tools, [] = none).
+# plugins.enabled [] is opt-in empty. Bundled plugins dir is mounted empty.
+
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+  provider: ""
+
+plugins:
+  enabled: []
+
+agent:
+  enabled_toolsets: []
+  disabled_toolsets:
+    - memory
+    - terminal
+    - web
+    - browser
+    - skills
+    - delegation
+    - code_execution
+    - mcp
+    - context_engine
+
+terminal:
+  home_mode: profile
+  backend: local
+  cwd: /isolated/workspace

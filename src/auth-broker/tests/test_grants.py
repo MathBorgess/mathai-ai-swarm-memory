@@ -92,13 +92,13 @@ def test_new_and_legacy_databases_migrate_without_duplicating_events(tmp_path):
             assert db.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 1
             assert db.execute("SELECT COUNT(*) FROM grant_audit_events").fetchone()[0] == 2
             assert db.execute("SELECT COUNT(*) FROM broker_sessions").fetchone()[0] == 1
-            assert db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+            assert db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
     finally:
         second.close()
     fresh = open_store(tmp_path / "fresh.sqlite3")
     try:
         with sqlite3.connect(tmp_path / "fresh.sqlite3") as db:
-            assert db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+            assert db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
             assert db.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
     finally:
         fresh.close()
@@ -281,3 +281,81 @@ def test_expired_grant_omitted_from_refresh_issued_access_survives_until_exp(tmp
                 access_token=tokens["access_token"], now=clock[0],
             ),
         ).status_code == 401
+
+
+def test_dpop_device_flow_accepts_granted_second_identity_and_keeps_legacy_owner_only(tmp_path, signing):
+    owner_key, pem, owner_jwk, _ = signing
+    other_key, _, other_jwk, _ = es256_material()
+    path = tmp_path / "broker.sqlite3"
+    github = GitHubOAuth(subject="4242")
+    store = open_store(path)
+    try:
+        register(store, owner_jwk, principal_id="owner-01", subject="12345", role="advisor")
+        store.set_grant("owner-01", "ctx:read:pesquisa.tcc", NOW, NOW + timedelta(days=30))
+        register(store, other_jwk, principal_id="github:4242", subject="4242", role="advisor")
+        store.set_grant("github:4242", "ctx:read:pesquisa.tcc", NOW, NOW + timedelta(days=30))
+        store.add_principal("github:7777", github_subject="7777", role="advisor", now=NOW)
+        store.set_grant("github:7777", "ctx:read:pesquisa.tcc", NOW, NOW + timedelta(days=30))
+    finally:
+        store.close()
+    app = create_app(
+        database_path=path, audience=AUDIENCE, owner_verifier=object(), hermes=FakeHermes(),
+        clock=lambda: NOW, github_oauth=github, github_allowed_user_id="12345",
+        token_signing_key=pem, workspace_id=WORKSPACE, public_url=PUBLIC_URL,
+    )
+    with TestClient(app) as client:
+        start = client.post(
+            "/v1/oauth/github/device/start",
+            json={"principal_id": "github:4242", "scopes": ["ctx:read:pesquisa.tcc"]},
+            headers=dpop_headers(other_key, method="POST", path="/v1/oauth/github/device/start"),
+        )
+        assert "device_code" in start.json(), start.json()
+        tokens = client.post(
+            "/v1/oauth/github/device/poll",
+            json={"device_code": start.json()["device_code"],
+                  "grant_type": "urn:ietf:params:oauth:grant-type:device_code"},
+            headers=dpop_headers(other_key, method="POST", path="/v1/oauth/github/device/poll"),
+        )
+        assert tokens.status_code == 200, tokens.json()
+        assert tokens.json()["token_type"] == "DPoP"
+        wrong_key = client.post(
+            "/v1/oauth/github/device/start",
+            json={"principal_id": "github:4242", "scopes": ["ctx:read:pesquisa.tcc"]},
+            headers=dpop_headers(owner_key, method="POST", path="/v1/oauth/github/device/start"),
+        )
+        assert wrong_key.json() == {"error": "access_denied"}
+        unkeyed = client.post(
+            "/v1/oauth/github/device/start",
+            json={"principal_id": "github:7777", "scopes": ["ctx:read:pesquisa.tcc"]},
+            headers=dpop_headers(other_key, method="POST", path="/v1/oauth/github/device/start"),
+        )
+        assert unkeyed.json() == {"error": "access_denied"}
+        github.subject = "99999"
+        mismatched = client.post(
+            "/v1/oauth/github/device/start",
+            json={"principal_id": "github:4242", "scopes": ["ctx:read:pesquisa.tcc"]},
+            headers=dpop_headers(other_key, method="POST", path="/v1/oauth/github/device/start"),
+        )
+        denied = client.post(
+            "/v1/oauth/github/device/poll",
+            json={"device_code": mismatched.json()["device_code"],
+                  "grant_type": "urn:ietf:params:oauth:grant-type:device_code"},
+            headers=dpop_headers(other_key, method="POST", path="/v1/oauth/github/device/poll"),
+        )
+        assert denied.json() == {"error": "access_denied"}
+        github.subject = "4242"
+        legacy = client.post("/v1/oauth/github/device/start", json={}).json()
+        assert client.post(
+            "/v1/oauth/github/device/poll",
+            json={"device_code": legacy["device_code"],
+                  "grant_type": "urn:ietf:params:oauth:grant-type:device_code"},
+        ).status_code == 403
+        github.subject = "12345"
+        owner_legacy = client.post("/v1/oauth/github/device/start", json={}).json()
+        polled = client.post(
+            "/v1/oauth/github/device/poll",
+            json={"device_code": owner_legacy["device_code"],
+                  "grant_type": "urn:ietf:params:oauth:grant-type:device_code"},
+        )
+        assert polled.status_code == 200
+        assert polled.json()["token_type"] == "Bearer"

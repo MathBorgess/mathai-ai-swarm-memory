@@ -89,3 +89,50 @@ def test_without_cloudflare_access_starts_and_disables_legacy_pairing(configured
     main = importlib.import_module("app.main")
     with TestClient(main.app) as client:
         assert client.post("/v1/pairing-requests", json={"public_key": "ignored"}).status_code == 404
+        assert client.get("/.well-known/oauth-protected-resource").status_code == 404
+
+
+def test_mcp_oauth_mounted_when_workspace_and_signing_key_are_set(configured, monkeypatch, tmp_path):
+    from swarm_helpers import es256_material
+
+    _, pem, _, _ = es256_material()
+    key_path = tmp_path / "signing.pem"
+    key_path.write_bytes(pem)
+    monkeypatch.setenv("AUTH_BROKER_WORKSPACE_ID", "personal")
+    monkeypatch.setenv("AUTH_BROKER_JWT_SIGNING_KEY_PATH", str(key_path))
+    monkeypatch.setenv("AUTH_BROKER_PUBLIC_URL", "https://a2a.mathai.com.br")
+    main = importlib.import_module("app.main")
+    with TestClient(main.app) as client:
+        resource = client.get("/.well-known/oauth-protected-resource")
+        assert resource.status_code == 200
+        assert resource.json()["resource"] == "https://a2a.mathai.com.br/mcp"
+        nested = client.get("/.well-known/oauth-protected-resource/mcp")
+        assert nested.status_code == 200
+        assert nested.json()["resource"] == "https://a2a.mathai.com.br/mcp"
+
+
+def test_incomplete_ask_configuration_fails_closed(configured, monkeypatch):
+    monkeypatch.setenv("AUTH_BROKER_ASK_IMAGE", "mathai-ask-worker:local")
+    with pytest.raises(RuntimeError, match="AUTH_BROKER_ASK_INFERENCE_CONFIG"):
+        importlib.import_module("app.main")
+
+
+def test_ask_without_context_store_fails_closed(configured, monkeypatch, tmp_path):
+    inference = tmp_path / "ask-inference.json"
+    inference.write_text('{"model":"stub","base_url":"http://127.0.0.1:9","api_key":"x","transport":"stub"}')
+    monkeypatch.setenv("AUTH_BROKER_ASK_INFERENCE_CONFIG", str(inference))
+    monkeypatch.setenv("AUTH_BROKER_ASK_IMAGE", "mathai-ask-worker:local")
+    monkeypatch.setenv("AUTH_BROKER_ASK_NETWORK", "ask-egress")
+    with pytest.raises(RuntimeError, match="AUTH_BROKER_CONTEXT_SQLITE"):
+        importlib.import_module("app.main")
+
+
+def test_ask_host_network_fails_closed(configured, monkeypatch, tmp_path):
+    inference = tmp_path / "ask-inference.json"
+    inference.write_text('{"model":"stub","base_url":"http://127.0.0.1:9","api_key":"x","transport":"stub"}')
+    monkeypatch.setenv("AUTH_BROKER_ASK_INFERENCE_CONFIG", str(inference))
+    monkeypatch.setenv("AUTH_BROKER_ASK_IMAGE", "mathai-ask-worker:local")
+    monkeypatch.setenv("AUTH_BROKER_ASK_NETWORK", "host")
+    monkeypatch.setenv("AUTH_BROKER_CONTEXT_SQLITE", str(tmp_path / "context.sqlite3"))
+    with pytest.raises(RuntimeError, match="host"):
+        importlib.import_module("app.main")

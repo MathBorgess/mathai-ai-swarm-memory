@@ -23,6 +23,31 @@ def test_authorization_code_routes_are_removed(tmp_path):
     with TestClient(app) as client:
         assert client.post("/v1/oauth/github/start", json={}).status_code == 404
         assert client.post("/v1/oauth/github/token", json={}).status_code == 404
+        assert client.get("/.well-known/oauth-protected-resource").status_code == 404
+
+
+def test_create_app_mounts_mcp_oauth_when_adapter_supplied(tmp_path):
+    from swarm_helpers import es256_material
+    from test_mcp_oauth import FakeGitHub
+
+    _, pem, _, _ = es256_material()
+    app = create_app(
+        database_path=tmp_path / "db",
+        audience="https://pair.example",
+        owner_verifier=object(),
+        hermes=Hermes(),
+        token_signing_key=pem,
+        workspace_id="personal",
+        public_url="https://a2a.mathai.com.br",
+        mcp_github=FakeGitHub(),
+    )
+    with TestClient(app) as client:
+        resource = client.get("/.well-known/oauth-protected-resource")
+        assert resource.status_code == 200
+        assert resource.json()["resource"] == "https://a2a.mathai.com.br/mcp"
+        server = client.get("/.well-known/oauth-authorization-server")
+        assert server.status_code == 200
+        assert server.json()["authorization_endpoint"] == "https://a2a.mathai.com.br/mcp/oauth/authorize"
 
 def test_device_flow_returns_broker_code_and_issues_token(tmp_path):
     app = create_app(database_path=tmp_path / "db", audience="https://pair.example", owner_verifier=object(), hermes=Hermes(), github_oauth=OAuth(), github_allowed_user_id="12345")

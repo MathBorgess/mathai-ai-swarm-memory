@@ -7,12 +7,13 @@ not change VPS, DNS or secrets.
 ## What is implemented
 
 - Additive SQLite v2 on the existing pairing/session store: principals, grants,
-  grant audit, token families, refresh hashes and DPoP replay. Reopening a
-  migrated database does not duplicate audit rows. Legacy `broker_sessions`,
-  nonces and pairing audit stay intact.
+  grant audit, token families, refresh hashes and DPoP replay. Version 3 adds a
+  cached GitHub login and unkeyed principals (empty JWK columns, never a
+  generated dummy key). Reopening a migrated database does not duplicate audit
+  rows. Legacy `broker_sessions`, nonces and pairing audit stay intact.
 - CLI `mathai-swarm` (store path required, no default file):
-  `principal add|list`, `grant set|list|revoke`, `token revoke --family`.
-  No HTTP or MCP route administers policy.
+  `allow @login`, `principal add|list`, `grant set|list|revoke`,
+  `token revoke --family`. No HTTP or MCP route administers policy.
 - GitHub Device Flow bound to a registered `principal_id` + JWK thumbprint.
   Effective scopes = requested ∩ active grants ∩ role eligibility. Grammar in
   this slice: `ctx:read:pesquisa.tcc` and `ctx:propose:pesquisa.tcc` only.
@@ -21,10 +22,10 @@ not change VPS, DNS or secrets.
   `sid` (family) and `cnf.jkt`. Default lifetime 5 minutes, cap 1 hour.
   Classifications are computed from role; clients cannot set them.
 - Refresh rotation with hashed tokens, one successor, skip-generation reuse
-  detection ([RFC 9700](https://www.rfc-editor.org/rfc/rfc9700) family policy
-  with a concurrent-retry exception documented below). DPoP per
-  [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449). Canonical `htu` comes
-  from `public_url`, never from forwarded Host headers.
+  detection ([RFC 9700](https://www.rfc-editor.org/rfc/rfc9700) family policy).
+  Replaying any prior refresh, including the immediate predecessor, revokes the
+  family. DPoP per [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449). Canonical
+  `htu` comes from `public_url`, never from forwarded Host headers.
 - `GET /v1/context/capabilities` reflects installed operations only. This
   delivery advertises `capabilities`. Query/resolve/propose authenticate, then
   return **503** until C/D routers are registered. Ctx grants never open the
@@ -57,12 +58,45 @@ Device Flow still starts; the DPoP/ctx flow returns 503.
 ## CLI
 
 ```bash
+mathai-swarm --store /absolute/path/broker.sqlite3 allow @calegario \
+  --role advisor --scope ctx:read:pesquisa.tcc \
+  --scope ctx:propose:pesquisa.tcc --ttl 30
 mathai-swarm --store /absolute/path/broker.sqlite3 principal add \
   --id advisor-01 --subject 12345 --role advisor --jwk '{"kty":"EC",...}'
 mathai-swarm --store /absolute/path/broker.sqlite3 grant set \
   --principal advisor-01 --scope ctx:read:pesquisa.tcc --days 30
 mathai-swarm --store /absolute/path/broker.sqlite3 token revoke --family <sid>
 ```
+
+`allow` resolves `GET https://api.github.com/users/{login}` (the `@` is
+optional), stores the numeric account id as identity, caches the current
+login, and creates principal `github:{id}` without a user JWK. Role, scopes
+and TTL are validated before the GitHub call; principal and grants are written
+in one transaction. Cached login is not an authorization key:
+`SqlitePairingStore.get_principal_by_github_subject` is the stable lookup for
+OAuth and Device Flow. It prefers the canonical `github:{id}` row when that
+id exists, including after DPoP key enrollment, so grants do not silently
+switch to an older keyed harness for the same GitHub account. A single
+non-canonical row is selected explicitly; several active legacy rows for the
+same subject fail closed. If the username later belongs to a different
+account id, a new `allow` grants that new id and does not move the old row.
+
+Unkeyed principals cannot mint DPoP families until the operator enrolls a
+public JWK (`enroll_principal_key`). `principal add --jwk` and existing keyed
+Device Flow stay as they are. HTTP Device Flow still lives in `api.py`.
+DPoP Device Flow accepts any granted principal whose GitHub subject and
+enrolled JWK match the presented proof; it is not limited to
+`GITHUB_ALLOWED_USER_ID`. Unkeyed DPoP starts are `access_denied`. Legacy
+empty Device Flow (`{}`, no DPoP) remains owner-id-only and issues `a2a:*`
+Bearer sessions.
+
+When workspace id and a JWT signing key are configured, `create_app` also
+mounts the remote MCP OAuth provider (`/.well-known/oauth-*` and
+`/mcp/oauth/*`). Resource/audience is `{public_url}/mcp`. The GitHub OAuth
+App must allow the web callback `{public_url}/mcp/oauth/callback` in addition
+to Device Flow. DCR permits exact `http://localhost` (no subdomains), numeric
+loopback, and `https` redirects; credentials, fragments and wildcards are
+rejected. MCP Bearer tokens are a distinct audience from DPoP/A2A.
 
 Roles: `owner`, `self-harness`, `advisor`. Role limits eligibility only.
 Advisor (and this slice of owner/self-harness) may receive only the two ctx
@@ -94,9 +128,9 @@ revoked.
 
 Refresh never extends family/grant expiry. Clients must serialize refresh per
 credential. Presenting the current refresh token issues one successor.
-Presenting the immediate predecessor (concurrent retry) returns
-`invalid_grant` without revoking. Presenting an older generation revokes the
-family.
+Presenting any prior generation, including the immediate predecessor,
+revokes the family (`invalid_grant`). Concurrent refresh of the same
+current token is serialized: one successor, the other is reuse.
 
 ## Wiring of the C/D routers
 
@@ -139,5 +173,8 @@ integration smoke runs on a live clock instead of a frozen one.
 ## Limits
 
 - One workspace per broker process, configured by the operator.
-- No MCP, no Graphiti, no proposal GitHub adapter, no KA Builder, no SaaS.
+- Remote MCP Streamable HTTP is mounted at `/mcp` when `mcp_github` is set
+  together with a signing key and workspace. OAuth metadata and `/mcp/oauth/*`
+  share that issuance configuration.
+- No Graphiti, no KA Builder, no SaaS.
 - Do not commit `.env`, PEMs, SQLite files or refresh tokens.

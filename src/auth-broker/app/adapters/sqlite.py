@@ -3,8 +3,9 @@
 Call approve only after authenticating the owner at the HTTP boundary. Each
 store owns one connection and must be closed by its caller. Schema version 1
 is bootstrapped here; version 2 is an additive migration for principals,
-grants, token families and DPoP replay. Reopening an already-migrated store
-does not duplicate rows.
+grants, token families and DPoP replay; version 3 adds a cached GitHub login
+and reads unkeyed principals (empty JWK) without generating dummy keys.
+Reopening an already-migrated store does not duplicate rows.
 """
 
 import hashlib
@@ -45,11 +46,12 @@ class BrokerSession:
 class Principal:
     id: str
     github_subject: str
-    jwk_thumbprint: str
-    jwk: dict
+    jwk_thumbprint: str | None
+    jwk: dict | None
     role: str
     created_at: datetime
     revoked_at: datetime | None = None
+    github_login: str | None = None
 
 @dataclass(frozen=True)
 class Grant:
@@ -97,7 +99,8 @@ _V2_SCHEMA = """
                 jwk TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('owner', 'self-harness', 'advisor')),
                 created_at TEXT NOT NULL,
-                revoked_at TEXT
+                revoked_at TEXT,
+                github_login TEXT
             );
             CREATE TABLE IF NOT EXISTS grants (
                 id TEXT PRIMARY KEY,
@@ -213,18 +216,24 @@ class SqlitePairingStore:
         return 0
 
     def _migrate(self) -> None:
-        version = self._schema_version()
-        if version >= 2:
-            return
         applied = datetime.now(timezone.utc).isoformat()
-        with self.connection:
-            self.connection.executescript(_V2_SCHEMA)
-            self.connection.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)", (applied,),
-            )
-            self.connection.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?)", (applied,),
-            )
+        if self._schema_version() < 2:
+            with self.connection:
+                self.connection.executescript(_V2_SCHEMA)
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)", (applied,),
+                )
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?)", (applied,),
+                )
+        if self._schema_version() < 3:
+            with self.connection:
+                columns = {row[1] for row in self.connection.execute("PRAGMA table_info(principals)")}
+                if "github_login" not in columns:
+                    self.connection.execute("ALTER TABLE principals ADD COLUMN github_login TEXT")
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, ?)", (applied,),
+                )
 
     def close(self) -> None:
         self.connection.close()
@@ -387,22 +396,30 @@ class SqlitePairingStore:
             stored = {"kty": "OKP", "crv": jwk["crv"], "x": jwk["x"]}
         return stored, thumbprint
 
-    def add_principal(self, principal_id: str, *, github_subject: str, jwk: dict, role: str, now: datetime) -> Principal:
+    def add_principal(
+        self,
+        principal_id: str,
+        *,
+        github_subject: str,
+        role: str,
+        now: datetime,
+        jwk: dict | None = None,
+        github_login: str | None = None,
+    ) -> Principal:
         _aware(now)
         validate_role(role)
         if not isinstance(principal_id, str) or not principal_id or len(principal_id) > 64:
             raise ValueError("Invalid principal id")
         if not isinstance(github_subject, str) or not github_subject.isdigit():
             raise ValueError("GitHub subject must be a numeric account id")
-        stored, thumbprint = self._public_jwk(jwk)
+        login = self._cached_login(github_login)
+        jwk_sql, thumb_sql, stored, thumbprint = self._jwk_columns(jwk)
         with self.connection:
-            self.connection.execute(
-                "INSERT INTO principals VALUES (?, ?, ?, ?, ?, ?, NULL)",
-                (principal_id, github_subject, thumbprint, json.dumps(stored, separators=(",", ":"), sort_keys=True),
-                 role, now.isoformat()),
+            self._insert_principal_locked(
+                principal_id, github_subject=github_subject, role=role, now=now,
+                jwk_sql=jwk_sql, thumb_sql=thumb_sql, github_login=login,
             )
-            self._grant_audit("principal_added", now, principal_id=principal_id)
-        return Principal(principal_id, github_subject, thumbprint, stored, role, now)
+        return Principal(principal_id, github_subject, thumbprint, stored, role, now, None, login)
 
     def list_principals(self) -> list[Principal]:
         rows = self.connection.execute(
@@ -414,17 +431,164 @@ class SqlitePairingStore:
         row = self.connection.execute("SELECT * FROM principals WHERE id = ?", (principal_id,)).fetchone()
         return None if row is None else self._principal_row(row)
 
+    def get_principal_by_github_subject(self, github_subject: str) -> Principal | None:
+        """Active principal anchored to a numeric GitHub account id.
+
+        Cached login is ignored. Prefer canonical github:{id} when present so
+        OAuth and Device Flow keep the same grants after DPoP key enrollment.
+        A single non-canonical row is selected explicitly; several fail closed.
+        """
+        if not isinstance(github_subject, str) or not github_subject.isdigit():
+            raise ValueError("GitHub subject must be a numeric account id")
+        rows = self.connection.execute(
+            """SELECT * FROM principals WHERE github_subject = ? AND revoked_at IS NULL
+               ORDER BY created_at, id""",
+            (github_subject,),
+        ).fetchall()
+        principals = [self._principal_row(row) for row in rows]
+        canonical_id = f"github:{github_subject}"
+        for principal in principals:
+            if principal.id == canonical_id:
+                return principal
+        if len(principals) == 1:
+            return principals[0]
+        return None
+
     def active_principal(self, principal_id: str) -> Principal | None:
         principal = self.get_principal(principal_id)
         if principal is None or principal.revoked_at is not None:
             return None
         return principal
 
+    def allow_github_principal(
+        self,
+        *,
+        github_subject: str,
+        github_login: str,
+        role: str,
+        scopes: tuple[str, ...] | list[str],
+        now: datetime,
+        expires_at: datetime,
+    ) -> Principal:
+        _aware(now)
+        _aware(expires_at)
+        validate_role(role)
+        if not isinstance(github_subject, str) or not github_subject.isdigit():
+            raise ValueError("GitHub subject must be a numeric account id")
+        login = self._cached_login(github_login)
+        if login is None:
+            raise ValueError("GitHub login cache is invalid")
+        if not scopes:
+            raise ScopeError("Requested scopes are required")
+        checked: list[str] = []
+        for scope in scopes:
+            validate_scope(scope, role=role)
+            if scope not in checked:
+                checked.append(scope)
+        validate_grant_ttl(now=now, expires_at=expires_at)
+        principal_id = f"github:{github_subject}"
+        if len(principal_id) > 64:
+            raise ValueError("Invalid principal id")
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT * FROM principals WHERE id = ?", (principal_id,),
+            ).fetchone()
+            if row is None:
+                self._insert_principal_locked(
+                    principal_id, github_subject=github_subject, role=role, now=now,
+                    jwk_sql="", thumb_sql="", github_login=login,
+                )
+            else:
+                existing = self._principal_row(row)
+                if existing.revoked_at is not None:
+                    raise ValueError("Unknown or revoked principal")
+                if existing.github_subject != github_subject:
+                    raise ValueError("GitHub subject does not match principal")
+                self.connection.execute(
+                    "UPDATE principals SET github_login = ?, role = ? WHERE id = ?",
+                    (login, role, principal_id),
+                )
+            for scope in checked:
+                self._insert_grant_locked(principal_id, scope, now, expires_at)
+        principal = self.get_principal(principal_id)
+        if principal is None:
+            raise ValueError("Unknown or revoked principal")
+        return principal
+
+    def enroll_principal_key(self, principal_id: str, jwk: dict, now: datetime) -> Principal:
+        _aware(now)
+        stored, thumbprint = self._public_jwk(jwk)
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT * FROM principals WHERE id = ?", (principal_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown or revoked principal")
+            principal = self._principal_row(row)
+            if principal.revoked_at is not None:
+                raise ValueError("Unknown or revoked principal")
+            if principal.jwk is not None or principal.jwk_thumbprint:
+                raise ValueError("Principal already has an enrolled DPoP key")
+            self.connection.execute(
+                "UPDATE principals SET jwk = ?, jwk_thumbprint = ? WHERE id = ?",
+                (json.dumps(stored, separators=(",", ":"), sort_keys=True), thumbprint, principal_id),
+            )
+        enrolled = self.get_principal(principal_id)
+        if enrolled is None:
+            raise ValueError("Unknown or revoked principal")
+        return enrolled
+
+    def _cached_login(self, github_login: str | None) -> str | None:
+        if github_login is None:
+            return None
+        if not isinstance(github_login, str) or not github_login or "/" in github_login:
+            raise ValueError("GitHub login cache is invalid")
+        if any(ch.isspace() for ch in github_login):
+            raise ValueError("GitHub login cache is invalid")
+        return github_login
+
+    def _jwk_columns(self, jwk: dict | None) -> tuple[str, str, dict | None, str | None]:
+        if jwk is None:
+            return "", "", None, None
+        stored, thumbprint = self._public_jwk(jwk)
+        return json.dumps(stored, separators=(",", ":"), sort_keys=True), thumbprint, stored, thumbprint
+
+    def _insert_principal_locked(
+        self,
+        principal_id: str,
+        *,
+        github_subject: str,
+        role: str,
+        now: datetime,
+        jwk_sql: str,
+        thumb_sql: str,
+        github_login: str | None,
+    ) -> None:
+        self.connection.execute(
+            """INSERT INTO principals (
+                   id, github_subject, jwk_thumbprint, jwk, role, created_at, revoked_at, github_login
+               ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)""",
+            (principal_id, github_subject, thumb_sql, jwk_sql, role, now.isoformat(), github_login),
+        )
+        self._grant_audit("principal_added", now, principal_id=principal_id)
+
     def _principal_row(self, row: sqlite3.Row) -> Principal:
         revoked = None if row["revoked_at"] is None else datetime.fromisoformat(row["revoked_at"])
+        raw_jwk = row["jwk"]
+        if not raw_jwk:
+            jwk = None
+            thumbprint = None
+        else:
+            jwk = json.loads(raw_jwk)
+            thumbprint = row["jwk_thumbprint"] or None
+        login = None
+        try:
+            login = row["github_login"] or None
+        except (IndexError, KeyError):
+            login = None
         return Principal(
-            row["id"], row["github_subject"], row["jwk_thumbprint"], json.loads(row["jwk"]),
-            row["role"], datetime.fromisoformat(row["created_at"]), revoked,
+            row["id"], row["github_subject"], thumbprint, jwk,
+            row["role"], datetime.fromisoformat(row["created_at"]), revoked, login,
         )
 
     def set_grant(self, principal_id: str, scope: str, now: datetime, expires_at: datetime) -> Grant:
@@ -435,17 +599,20 @@ class SqlitePairingStore:
         if principal is None:
             raise ValueError("Unknown or revoked principal")
         validate_scope(scope, role=principal.role)
-        grant = Grant(secrets.token_urlsafe(16), principal_id, scope, now, expires_at)
         with self.connection:
-            self.connection.execute(
-                "UPDATE grants SET revoked_at = ? WHERE principal_id = ? AND scope = ? AND revoked_at IS NULL",
-                (now.isoformat(), principal_id, scope),
-            )
-            self.connection.execute(
-                "INSERT INTO grants VALUES (?, ?, ?, ?, ?, NULL)",
-                (grant.id, principal_id, scope, now.isoformat(), expires_at.isoformat()),
-            )
-            self._grant_audit("grant_set", now, principal_id=principal_id, scope=scope)
+            return self._insert_grant_locked(principal_id, scope, now, expires_at)
+
+    def _insert_grant_locked(self, principal_id: str, scope: str, now: datetime, expires_at: datetime) -> Grant:
+        grant = Grant(secrets.token_urlsafe(16), principal_id, scope, now, expires_at)
+        self.connection.execute(
+            "UPDATE grants SET revoked_at = ? WHERE principal_id = ? AND scope = ? AND revoked_at IS NULL",
+            (now.isoformat(), principal_id, scope),
+        )
+        self.connection.execute(
+            "INSERT INTO grants VALUES (?, ?, ?, ?, ?, NULL)",
+            (grant.id, principal_id, scope, now.isoformat(), expires_at.isoformat()),
+        )
+        self._grant_audit("grant_set", now, principal_id=principal_id, scope=scope)
         return grant
 
     def list_grants(self, principal_id: str, now: datetime) -> list[Grant]:
@@ -488,8 +655,11 @@ class SqlitePairingStore:
         _aware(expires_at)
         if not workspace_id or not refresh_token_hash or not requested_scopes or expires_at <= now:
             raise ValueError("Invalid token family")
-        if self.active_principal(principal_id) is None:
+        principal = self.active_principal(principal_id)
+        if principal is None:
             raise ValueError("Unknown or revoked principal")
+        if not principal.jwk_thumbprint:
+            raise ValueError("Principal has no enrolled DPoP key")
         family_id = secrets.token_urlsafe(32)
         family = TokenFamily(
             family_id, principal_id, workspace_id, refresh_token_hash, None, now, expires_at,
@@ -592,8 +762,6 @@ class SqlitePairingStore:
                     token_hash, datetime.fromisoformat(row["created_at"]), family_expires,
                     tuple(row["requested_scopes"].split()),
                 )
-            if row["previous_token_hash"] == token_hash:
-                raise InvalidGrant("Invalid refresh token")
             self._revoke_family_locked(row["family_id"], now)
             reuse = True
         if reuse:

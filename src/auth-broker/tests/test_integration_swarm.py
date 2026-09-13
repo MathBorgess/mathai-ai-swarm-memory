@@ -17,7 +17,10 @@ from app.adapters.sqlite import SqlitePairingStore
 from app.api import create_app
 from app.context import ContextStore, build_router as build_context_router
 from app.context.store import ingest_manifest
+from app.ask import IsolationConfig, MemoryThreadStore, worker_root
+from app.ask import build_router as build_ask_router
 from app.proposals import ProposalStore, build_router as build_proposal_router
+from test_ask import RecordingWorker
 from swarm_helpers import (
     AUDIENCE,
     PUBLIC_URL,
@@ -220,3 +223,59 @@ def test_installed_routers_do_not_shadow_the_legacy_bearer_path(tmp_path, signin
         ).status_code == 401
     assert hermes.queries == [("github:12345", "hello")]
     ctx.close()
+
+
+def test_ask_http_uses_isolated_service_and_skips_empty_corpus(tmp_path, signing):
+    key, pem, jwk, _ = signing
+    path = tmp_path / "broker.sqlite3"
+    with closing(SqlitePairingStore(path)) as store:
+        store.add_principal("advisor-01", github_subject="12345", jwk=jwk, role="advisor", now=NOW)
+        store.set_grant("advisor-01", READ, NOW, NOW + timedelta(days=30))
+    context_store = _context_store(tmp_path)
+    worker = RecordingWorker()
+    inference = tmp_path / "ask-inference.json"
+    inference.write_text('{"transport":"stub","model":"stub"}', encoding="utf-8")
+    root = worker_root()
+    isolation = IsolationConfig(
+        image="mathai-ask-worker:test",
+        launch_script=root / "launch.sh",
+        worker_script=root / "worker_main.py",
+        style_path=root / "style" / "SOUL.md",
+        docker_bin=tmp_path / "docker-not-used",
+        inference_config=inference,
+        network="none",
+    )
+    threads = MemoryThreadStore()
+    app = create_app(
+        database_path=path, audience=AUDIENCE, owner_verifier=object(),
+        hermes=FakeHermes(), clock=lambda: NOW, github_oauth=GitHubOAuth(),
+        github_allowed_user_id="12345", token_signing_key=pem,
+        workspace_id=WORKSPACE, public_url=PUBLIC_URL,
+        context_router_factory=lambda *, authorize: build_context_router(
+            authorize=authorize, store=context_store,
+        ),
+        ask_router_factory=lambda *, authorize: build_ask_router(
+            authorize=authorize, store=context_store, worker=worker,
+            isolation=isolation, threads=threads,
+        ),
+    )
+    client = TestClient(app)
+    with client:
+        token = _token(client, key, "advisor-01", [READ])
+        caps = client.get(
+            "/v1/context/capabilities",
+            headers=dpop_headers(
+                key, method="GET", path="/v1/context/capabilities", access_token=token, now=NOW,
+            ),
+        ).json()
+        assert caps["operations"] == ["capabilities", "query", "resolve", "ask"]
+        empty = _post(client, key, token, "/v1/context/ask", {"query": "zzzz-not-indexed"})
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["items"] == []
+        assert worker.payloads == []
+        asked = _post(client, key, token, "/v1/context/ask", {"query": "token-a"})
+        assert asked.status_code == 200, asked.text
+        assert asked.json()["items"]
+        blob = str(worker.payloads)
+        assert "token-b" not in blob
+    context_store.close()

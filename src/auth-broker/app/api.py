@@ -17,7 +17,8 @@ import hmac
 import json
 import re
 import secrets
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,6 +33,9 @@ from app.adapters.hermes import HermesClient, HermesError
 from app.adapters.github import GitHubOAuth, GitHubOAuthError
 from app.adapters.owner import OwnerAssertionVerifier, OwnerAuthenticationError
 from app.adapters.sqlite import InvalidGrant, RefreshReuse, SqlitePairingStore
+from app.mcp_oauth import build_router as build_mcp_oauth_router
+from app.mcp_oauth.github import GitHubAuthorizationCode
+from app.remote_mcp import TransportSecuritySettings, attach_mcp, build_remote_mcp
 from app.agent_card import build_agent_card
 from app.auth.dpop import (
     DPOP_IAT_WINDOW,
@@ -89,6 +93,30 @@ def _mounted(router, path: str):
     raise RuntimeError(f"Router does not expose POST {path}")
 
 
+def _attach_remote_mcp(app, authorize, public_url: str, *, query, resolve, propose, ask):
+    parsed = urlparse(public_url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError("public_url must include a hostname")
+    origin = public_url.rstrip("/")
+    remote = build_remote_mcp(
+        authorize=authorize,
+        query=query,
+        resolve=resolve,
+        propose=propose,
+        ask=ask,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[host, f"{host}:*"],
+            allowed_origins=[origin],
+        ),
+        host=host,
+    )
+    attach_mcp(app, remote)
+    app.state.remote_mcp = remote
+    return remote
+
+
 def _oauth_error(error: str, status: int = 400, *, headers: dict[str, str] | None = None) -> JSONResponse:
     response = JSONResponse({"error": error}, status_code=status)
     if headers:
@@ -131,12 +159,33 @@ def create_app(*, database_path: str | Path, audience: str,
                issuer: str | None = None,
                access_token_lifetime: timedelta = timedelta(minutes=5),
                context_router_factory: Callable | None = None,
-               proposal_router_factory: Callable | None = None) -> FastAPI:
+               proposal_router_factory: Callable | None = None,
+               mcp_github: GitHubAuthorizationCode | None = None,
+               mcp_registration_limit: int = 32,
+               ask_router_factory: Callable | None = None,
+               mcp_query: Callable | None = None,
+               mcp_resolve: Callable | None = None,
+               mcp_propose: Callable | None = None,
+               mcp_ask: Callable | None = None) -> FastAPI:
     if not audience or not timedelta(0) < agent_lifetime <= timedelta(hours=1):
         raise ValueError("Audience and agent lifetime of at most one hour are required")
     if not timedelta(0) < access_token_lifetime <= timedelta(hours=1):
         raise ValueError("Access token lifetime must be at most one hour")
-    app = FastAPI(title="Agent Pairing Broker", version="0.0.1")
+    remote_holder: dict[str, object] = {"remote": None}
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        remote = remote_holder["remote"]
+        if remote is None:
+            yield
+            return
+        async with remote.lifespan(_app):
+            yield
+
+    app = FastAPI(
+        title="Agent Pairing Broker", version="0.0.1",
+        lifespan=lifespan, redirect_slashes=False,
+    )
     session_lifetime = session_lifetime or agent_lifetime
     device_transactions: dict[str, _DeviceTx] = {}
     token_issuer = (
@@ -150,6 +199,7 @@ def create_app(*, database_path: str | Path, audience: str,
     )
     context_installed = context_router_factory is not None
     proposal_installed = proposal_router_factory is not None
+    ask_installed = ask_router_factory is not None
 
     def _store() -> SqlitePairingStore:
         return SqlitePairingStore(database_path)
@@ -245,14 +295,38 @@ def create_app(*, database_path: str | Path, audience: str,
             "expires_in": int((access_exp - now).total_seconds()),
         }
 
+    mcp_oauth = None
+    if mcp_github is not None:
+        if token_signing_key is None or not workspace_id:
+            raise ValueError("MCP OAuth requires a signing key and workspace_id")
+        mcp_oauth = build_mcp_oauth_router(
+            database_path=database_path,
+            github=mcp_github,
+            signing_key=token_signing_key,
+            workspace_id=workspace_id,
+            clock=clock,
+            public_url=public_url,
+            registration_limit=mcp_registration_limit,
+        )
+        app.include_router(mcp_oauth.router)
     app.state.authorize = authorize
+    app.state.mcp_authorize = None if mcp_oauth is None else mcp_oauth.authorize
+    app.state.mcp_oauth = mcp_oauth
     app.state.context_router_factory = context_router_factory
     app.state.proposal_router_factory = proposal_router_factory
+    app.state.ask_router_factory = ask_router_factory
     context_router = context_router_factory(authorize=authorize) if context_installed else None
     proposal_router = proposal_router_factory(authorize=authorize) if proposal_installed else None
+    ask_router = ask_router_factory(authorize=authorize) if ask_installed else None
     context_query = _mounted(context_router, "/v1/context/query")
     context_resolve = _mounted(context_router, "/v1/context/resolve")
     proposal_propose = _mounted(proposal_router, "/v1/context/propose")
+    context_ask = _mounted(ask_router, "/v1/context/ask")
+    if mcp_oauth is not None:
+        remote_holder["remote"] = _attach_remote_mcp(
+            app, mcp_oauth.authorize, public_url,
+            query=mcp_query, resolve=mcp_resolve, propose=mcp_propose, ask=mcp_ask,
+        )
 
     @app.get("/.well-known/agent-card.json")
     def agent_card():
@@ -300,7 +374,9 @@ def create_app(*, database_path: str | Path, audience: str,
             return _dpop_error()
         with closing(_store()) as store:
             principal = store.active_principal(data["principal_id"])
-        if principal is None or verified.jkt != principal.jwk_thumbprint:
+        if principal is None or principal.jwk is None or not principal.jwk_thumbprint:
+            return _oauth_error("access_denied")
+        if verified.jkt != principal.jwk_thumbprint:
             return _oauth_error("access_denied")
         try:
             payload = github_oauth.start_device()
@@ -377,8 +453,8 @@ def create_app(*, database_path: str | Path, audience: str,
             principal = store.active_principal(tx.principal_id)
             if (
                 principal is None
-                or github_allowed_user_id is None
-                or subject != github_allowed_user_id
+                or principal.jwk is None
+                or not principal.jwk_thumbprint
                 or subject != principal.github_subject
                 or verified.jkt != principal.jwk_thumbprint
             ):
@@ -473,6 +549,8 @@ def create_app(*, database_path: str | Path, audience: str,
         operations = ["capabilities"]
         if context_installed:
             operations.extend(["query", "resolve"])
+        if ask_installed:
+            operations.append("ask")
         if proposal_installed:
             operations.append("propose")
         return {
@@ -500,6 +578,15 @@ def create_app(*, database_path: str | Path, audience: str,
         if not any(scope.startswith("ctx:propose:") for scope in mapping["scopes"]):
             raise HTTPException(403, "Operation is outside the granted scope")
         raise HTTPException(503, "Context propose is not installed")
+
+    @app.post("/v1/context/ask")
+    def ask(request: Request, body: bytes = Depends(_body)):
+        if context_ask is not None:
+            return context_ask(request, body)
+        mapping = authorize(request)
+        if not any(scope.startswith("ctx:read:") for scope in mapping["scopes"]):
+            raise HTTPException(403, "Operation is outside the granted scope")
+        raise HTTPException(503, "Ask generator is not installed")
 
     @app.post("/v1/pairing-requests", status_code=201)
     def new_pairing(body: bytes = Depends(_body)):

@@ -1,6 +1,6 @@
-# Wiki — mathai-context-engine
+# Wiki — mathai-ai-swarm-memory
 
-Documentação mínima para agentes que precisam entender o repositório sem depender de uma sessão anterior.
+Documentação mínima para agentes que precisam entender o repositório sem depender de uma sessão anterior. O remoto GitHub atual é `MathBorgess/mathai-ai-swarm-memory`; ADRs históricas abaixo preservam o nome anterior.
 
 ## Arquitetura
 
@@ -17,7 +17,9 @@ Documentação mínima para agentes que precisam entender o repositório sem dep
 
 ## Componentes do swarm
 
-- [[src/swarm-mcp/README]] — adaptador MCP local: Device Flow, DPoP, keystore do OS, tools `query`/`resolve`/`capabilities`/`propose`.
+- [[src/swarm-mcp/README]] — adaptador MCP local (Device Flow + DPoP), ainda útil para operadores.
+- [[docs/operations/swarm-connector]] — MCP remoto Streamable HTTP em `/mcp` e cadastro Cursor/Claude/Codex.
+- [[docs/operations/swarm-ask]] — gerador Hermes isolado; pin `de2d6a1b93508463c31434c1ae067e204af81238`.
 
 ## Operação
 
