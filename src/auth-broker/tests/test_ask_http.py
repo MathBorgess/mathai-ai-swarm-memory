@@ -11,17 +11,17 @@ from test_context_manifest import advisor
 
 
 def _isolation(tmp_path):
-    home = tmp_path / "ask-runtime"
-    home.mkdir()
-    (home / "home").mkdir()
+    from app.ask import IsolationConfig, worker_root
+    from test_ask import _inference
+
     root = worker_root()
     return IsolationConfig(
-        runtime_home=home,
         image="mathai-ask-worker:test",
         launch_script=root / "launch.sh",
         worker_script=root / "worker_main.py",
         style_path=root / "style" / "SOUL.md",
         docker_bin=tmp_path / "docker-not-used",
+        inference_config=_inference(tmp_path),
         network="none",
     )
 

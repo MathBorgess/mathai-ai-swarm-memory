@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping
 
-from app.ask.isolation import IsolationConfig, IsolationUnavailable
-from app.ask.threads import MemoryThreadStore, ThreadRecord
+from app.ask.isolation import IsolationConfig, IsolationUnavailable, WorkerTimeout
+from app.ask.threads import MemoryThreadStore, ThreadBusy, ThreadRecord
 from app.context.query import AuthError, search, validate_principal
 
 
@@ -63,33 +62,40 @@ class AskService:
             raise AuthError(413, "Request body too large")
         now = self.clock()
         record = self._thread(auth, thread_id, now)
-        prior = list(record.user_turns)
-        record.user_turns = (record.user_turns + [query])[-self.threads.max_turns :]
-        record.last_used = now
-        self.threads.save(record)
-        envelope, receipt = self._envelope(auth, query, prior)
-        if not envelope:
-            return {"items": [], "capability_receipt": receipt, "thread_id": record.thread_id}
-        payload = {
-            "query": query,
-            "prior_user_turns": prior,
-            "envelope": envelope,
-            "budget": {
-                "max_output_chars": self.budget.max_output_chars,
-                "timeout_seconds": self.budget.timeout_seconds,
-            },
-        }
-        if not self._slots.acquire(blocking=False):
-            raise AskBusy("Ask concurrency limit")
         try:
-            result = self._call_worker(payload)
+            self.threads.acquire(record.thread_id)
+        except ThreadBusy as error:
+            raise AskBusy("Ask thread is busy") from error
+        try:
+            prior = list(record.user_turns)
+            record.user_turns = (record.user_turns + [query])[-self.threads.max_turns :]
+            record.last_used = now
+            self.threads.save(record)
+            envelope, receipt = self._envelope(auth, query, prior)
+            if not envelope:
+                return {"items": [], "capability_receipt": receipt, "thread_id": record.thread_id}
+            payload = {
+                "query": query,
+                "prior_user_turns": prior,
+                "envelope": envelope,
+                "budget": {
+                    "max_output_chars": self.budget.max_output_chars,
+                    "timeout_seconds": self.budget.timeout_seconds,
+                },
+            }
+            if not self._slots.acquire(blocking=False):
+                raise AskBusy("Ask concurrency limit")
+            try:
+                result = self._call_worker(payload)
+            finally:
+                self._slots.release()
+            return {
+                "items": [self._answer(result, envelope)],
+                "capability_receipt": receipt,
+                "thread_id": record.thread_id,
+            }
         finally:
-            self._slots.release()
-        return {
-            "items": [self._answer(result, envelope)],
-            "capability_receipt": receipt,
-            "thread_id": record.thread_id,
-        }
+            self.threads.release(record.thread_id)
 
     def _thread(self, auth: dict, thread_id: str | None, now: datetime) -> ThreadRecord:
         if thread_id is None or thread_id == "":
@@ -116,12 +122,31 @@ class AskService:
         return items, current["capability_receipt"]
 
     def _call_worker(self, payload: dict) -> dict:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(self.worker.generate, payload)
+        box: dict = {}
+        done = threading.Event()
+
+        def run() -> None:
             try:
-                result = future.result(timeout=self.budget.timeout_seconds)
-            except FuturesTimeout as error:
-                raise AskTimeout("Ask worker timed out") from error
+                box["result"] = self.worker.generate(payload)
+            except BaseException as error:
+                box["error"] = error
+            finally:
+                done.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        if not done.wait(timeout=self.budget.timeout_seconds):
+            abort = getattr(self.worker, "abort", None)
+            if callable(abort):
+                abort()
+            raise AskTimeout("Ask worker timed out")
+        error = box.get("error")
+        if isinstance(error, WorkerTimeout):
+            raise AskTimeout("Ask worker timed out") from error
+        if isinstance(error, AskTimeout):
+            raise error
+        if error is not None:
+            raise error
+        result = box.get("result")
         if not isinstance(result, dict) or not isinstance(result.get("text"), str):
             raise IsolationUnavailable("Ask worker returned invalid output")
         return result
@@ -134,8 +159,6 @@ class AskService:
             for handle in raw:
                 if isinstance(handle, str) and handle in allowed and handle not in cited:
                     cited.append(handle)
-        if not cited:
-            cited = [item["handle"] for item in envelope]
         text = result["text"][: self.budget.max_output_chars]
         revision = allowed[cited[0]]["source_revision"] if cited else envelope[0]["source_revision"]
         return {"text": text, "cited_handles": cited, "source_revision": revision}

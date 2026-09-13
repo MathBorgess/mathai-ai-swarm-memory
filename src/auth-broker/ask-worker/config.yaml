@@ -1,11 +1,14 @@
-# Dedicated ask-worker Hermes profile. Not the owner ~/.hermes.
-# Tools off: enabled_toolsets [] is the allowlist (Hermes AIAgent treats [] as
-# no tools, including memory-provider and context-engine injection).
-# skip_memory + these flags are also passed to AIAgent in worker_main.py.
+# Dedicated ask-worker Hermes profile. Generated per job; never an owner ~/.hermes.
+# enabled_toolsets [] is the allowlist (Hermes: None = all tools, [] = none).
+# plugins.enabled [] is opt-in empty. Bundled plugins dir is mounted empty.
 
 memory:
   memory_enabled: false
   user_profile_enabled: false
+  provider: ""
+
+plugins:
+  enabled: []
 
 agent:
   enabled_toolsets: []
@@ -18,6 +21,7 @@ agent:
     - delegation
     - code_execution
     - mcp
+    - context_engine
 
 terminal:
   home_mode: profile

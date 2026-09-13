@@ -1,0 +1,4 @@
+commit=de2d6a1b93508463c31434c1ae067e204af81238
+repo=https://github.com/NousResearch/hermes-agent.git
+run_agent_sha256=11cc45fad98fd6e345f1895c54a8ff2277b46f89ea10a5c95a47a221d117b3d6
+agent_init_sha256=3785675c236518a71c2d646dce823bdd4285c0a0acad3642704e700087a8e16a

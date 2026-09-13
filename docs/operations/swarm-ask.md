@@ -1,18 +1,21 @@
 # Isolated ask — Hermes generator, not the owner A2A peer
 
 This slice is the ask tool: a **dedicated, tools/memory-free Hermes `AIAgent`**
-in an isolated runtime home, fed only the currently authorized envelope. It is
-not wired into `app/api.py` or `app/main.py`. SQLite durability and the
+in a per-job generated profile, fed only the currently authorized envelope. It
+is not wired into `app/api.py` or `app/main.py`. SQLite durability and the
 `mathai-swarm` CLI are owned by other agents. Do not treat these tests as
 production/model/harness proof.
 
 Primary sources used for the generator:
 
 - [Hermes Python library](https://hermes-agent.nousresearch.com/docs/guides/python-library) — `AIAgent(..., enabled_toolsets=[], skip_memory=True, skip_context_files=True)`
-- [Hermes configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) — `memory_enabled`/`user_profile_enabled` false; `terminal.home_mode: profile`
-- [Hermes profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles) — `HERMES_HOME` is the profile boundary; a profile is **not** a sandbox
-- [Hermes `agent/agent_init.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/agent_init.py) — `enabled_toolsets=[]` gates memory-provider and context-engine injection ([#30177](https://github.com/NousResearch/hermes-agent/pull/30177))
-- [Hermes Docker environment](https://github.com/NousResearch/hermes-agent/blob/main/tools/environments/docker.py) — `--cap-drop ALL`, `no-new-privileges`; we add `--read-only` and default `--network none`
+- [Hermes configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) — `memory_enabled`/`user_profile_enabled` false; `plugins.enabled: []`; `terminal.home_mode: profile`
+- [Hermes `model_tools.get_tool_definitions`](https://github.com/NousResearch/hermes-agent/blob/de2d6a1b93508463c31434c1ae067e204af81238/model_tools.py) — `enabled_toolsets is None` means all tools; `[]` means none
+- [Hermes `agent/agent_init.py`](https://github.com/NousResearch/hermes-agent/blob/de2d6a1b93508463c31434c1ae067e204af81238/agent/agent_init.py) — `skip_memory` skips external memory providers; `plugins.enabled` is opt-in
+- [Hermes Docker environment](https://github.com/NousResearch/hermes-agent/blob/main/tools/environments/docker.py) — `--cap-drop ALL`, `no-new-privileges`; we add `--read-only` and reject `host` network
+
+Pinned Hermes commit (also in `ask-worker/HERMES_PIN`):
+`de2d6a1b93508463c31434c1ae067e204af81238`.
 
 Ask does **not** call `HttpHermesClient` / `message/send`. That path is the
 owner's unrestricted A2A peer.
@@ -22,29 +25,28 @@ owner's unrestricted A2A peer.
 Package: `app.ask` (under `src/auth-broker/`). Tests: `tests/test_ask*.py`.
 
 ```python
+from pathlib import Path
 from app.ask import (
     AskBudget, AskService, ContainerWorker, IsolationConfig, MemoryThreadStore, build_router, worker_root,
 )
 
 isolation = IsolationConfig(
-    runtime_home=Path("/var/lib/auth-broker/ask-hermes-home"),  # not ~/.hermes, not $HERMES_HOME
     image="mathai-ask-worker:local",
     launch_script=worker_root() / "launch.sh",
     worker_script=worker_root() / "worker_main.py",
-    style_path=worker_root() / "style" / "SOUL.md",
+    style_path=worker_root() / "style" / "SOUL.md",  # only this public file
     docker_bin=Path("/usr/bin/docker"),
-    network="none",  # or a dedicated egress network; never "host"
+    inference_config=Path("/etc/auth-broker/ask-inference.json"),  # dedicated file, not ~/.hermes
+    network="ask-egress",  # dedicated docker network; never "host"
 )
 isolation.validate()
 worker = ContainerWorker(isolation)
-threads = MemoryThreadStore(max_turns=8, ttl_seconds=3600)  # replace with durable store later
+threads = MemoryThreadStore(max_turns=8, ttl_seconds=3600)  # in-process ephemeral; lost on restart
 
-# Direct call (MCP/tool layer):
 result = AskService(store=context_store, worker=worker, threads=threads, isolation=isolation).ask(
     principal, query, thread_id=None,
 )
 
-# HTTP factory — same authorize(request) mapping as query/propose:
 router = build_router(authorize=authorize, store=context_store, worker=worker, isolation=isolation, threads=threads)
 # POST /v1/context/ask  body: {"query": "...", "thread_id"?: "..."}
 ```
@@ -68,28 +70,51 @@ router = build_router(authorize=authorize, store=context_store, worker=worker, i
 ```
 
 Empty authorized corpus → `items: []`, **no worker/model call**, `thread_id` still issued.
+`cited_handles` is only what the model listed and that still exists in this turn's
+envelope. An empty list means no validated citation; the worker does not label
+every envelope handle as cited.
 
 Suggested wiring in `main.py` (do **not** land in this slice): only when
-`AUTH_BROKER_ASK_RUNTIME_HOME`, `AUTH_BROKER_ASK_IMAGE`, and
-`AUTH_BROKER_CONTEXT_SQLITE` are all set; incomplete subset is a startup error.
-Missing all three leaves ask uninstalled (503, capabilities omit `ask`).
-Delegate `POST /v1/context/ask` like query so `authorize()` runs once. Never
-fall back to the legacy Hermes bearer.
+`AUTH_BROKER_ASK_INFERENCE_CONFIG`, `AUTH_BROKER_ASK_IMAGE`,
+`AUTH_BROKER_ASK_NETWORK`, and `AUTH_BROKER_CONTEXT_SQLITE` are all set;
+incomplete subset is a startup error. Missing the set leaves ask uninstalled
+(503, capabilities omit `ask`). Delegate `POST /v1/context/ask` like query so
+`authorize()` runs once. Never fall back to the legacy Hermes bearer.
+
+Dedicated inference file (operator-created, mode 0400, **not** owner `~/.hermes`
+or `~/.env`):
+
+```json
+{
+  "model": "provider/model-id",
+  "base_url": "https://example-inference.invalid/v1",
+  "api_key": "<dedicated ask key, not an owner session>"
+}
+```
+
+Tests may use `"transport": "stub"` in that file. There is no live provider call
+in this repository's tests.
 
 ## Isolation (fail closed)
 
 | Control | What it does |
 |---|---|
-| Dedicated `HERMES_HOME` | `IsolationConfig.runtime_home` must exist and must not be `$HOME`, `$HOME/.hermes`, or the broker process `HERMES_HOME` |
-| Container launch | `ask-worker/launch.sh`: `docker run --read-only --cap-drop ALL --security-opt no-new-privileges --network ${ASK_NETWORK:-none}` plus tmpfs scratch, numeric `--user`, bind-mounts only for runtime home, job JSON, worker script, public style |
-| Hermes `AIAgent` | `enabled_toolsets=[]`, `skip_memory=True`, `skip_context_files=True`, `load_soul_identity=False`, `max_iterations=1` |
-| Profile config | `ask-worker/config.yaml`: `memory_enabled: false`, `user_profile_enabled: false`, `enabled_toolsets: []`, `terminal.home_mode: profile` |
-| Style | `ask-worker/style/SOUL.md` only. Owner `SOUL.md` / `memories/*` are not mounted |
-| Secrets | Launch unsets `HERMES_BROKER_TOKEN`, `HERMES_A2A_URL`, `HERMES_REAL_HOME`. Job payload has excerpts/handles, never caller tokens |
+| Per-job profile | `ContainerWorker` writes a fresh temp directory (config + public SOUL + empty bundled-plugins). It never mounts an existing Hermes home and never deletes user `memories/` |
+| Container launch | `ask-worker/launch.sh`: `docker run --read-only --cap-drop ALL --security-opt no-new-privileges --network "$ASK_NETWORK" --name …` plus tmpfs scratch, numeric `--user`. Bind-mounts: generated profile, job JSON, worker script, public style, inference file. All read-only |
+| Dockerfile | Clones pinned Hermes via `install_hermes.sh`, runs `verify_hermes.py` (import + sha256 + `AIAgent.chat -> str`). `ENTRYPOINT ["python3", "/opt/ask-worker/worker_main.py"]`; launch command is only `/job.json` |
+| Hermes `AIAgent` | `enabled_toolsets=[]`, `skip_memory=True`, `skip_context_files=True`, `load_soul_identity=False`, `max_iterations=1`. After init the worker asserts `agent.tools == []`, empty `valid_tool_names`, no memory provider/store |
+| Profile config | `ask-worker/config.yaml`: `memory_enabled: false`, `plugins.enabled: []`, `enabled_toolsets: []` |
+| Style | `ask-worker/style/SOUL.md` only |
+| Secrets | Launch unsets `HERMES_BROKER_TOKEN`, `HERMES_A2A_URL`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Job payload has excerpts/handles, never caller tokens. Inference credentials are the dedicated file |
 
-Absent image, runtime home, launch script, style, or docker binary →
-`IsolationUnavailable` (HTTP 503). Host network is rejected. This is not
-prompt-only isolation.
+Absent image, inference file, launch script, public style, docker binary, or
+network → `IsolationUnavailable` (HTTP 503). Host network is rejected.
+
+**Network / egress:** `ASK_NETWORK` is required. `host` is forbidden.
+`none` has no egress: the worker cannot reach an inference provider (correct for
+infrastructure tests). Production generation needs a dedicated non-host Docker
+network that can reach only the inference `base_url`. This slice does not create
+that network.
 
 Worker payload (broker → container, no credentials):
 
@@ -103,46 +128,51 @@ Worker payload (broker → container, no credentials):
 ```
 
 Threads store **user questions only**, keyed by `principal_id` + `workspace_id`.
-Each turn re-runs `app.context.query.search` on the **current** principal.
-Previous assistant prose and previously authorized excerpts are not replayed, so
-a grant/ACL downgrade cannot keep private content in the worker input.
-Cross-principal or expired thread → 403 `"Thread not available"` (same as
-unknown). Bounded to 8 turns / 1 hour (configurable via `AskBudget` /
-`MemoryThreadStore`). Citations are intersected with the current envelope
-handles.
+`MemoryThreadStore` is **single-process and ephemeral** (no database): max 64
+threads, 8 per principal, TTL sweep on every mutation, concurrent updates to the
+same `thread_id` are rejected (429). Each turn re-runs `app.context.query.search`
+on the current principal. Previous assistant prose is not replayed.
 
-Limits: body 16 KiB; query 2000 chars; envelope 10 items; output 8000 chars;
-worker timeout 30s (504); concurrency 2 (429). No fallback to personal Hermes.
+Limits: body 16 KiB; query 2000 chars; envelope 10 items; output 8000 chars
+(capped while reading the worker pipe, and during generation via stream callback);
+worker timeout kills the process group and `docker rm -f` the named container
+(504); concurrency 2 (429). No fallback to personal Hermes.
 
 ## Operator launch
 
 ```bash
-# From src/auth-broker, on the VPS — dedicated directory, not ~/.hermes
-install -d -m 0750 /var/lib/auth-broker/ask-hermes-home/home
+# From src/auth-broker on the VPS — dedicated inference file, not ~/.hermes
+install -d -m 0750 /var/lib/auth-broker
+install -m 0400 /path/to/ask-inference.json /etc/auth-broker/ask-inference.json
+docker network create ask-egress   # dedicated; not host. Limit egress to the inference endpoint.
+cd ask-worker && bash install_hermes.sh   # or:
 docker build -t mathai-ask-worker:local ask-worker
-# Vendor hermes-agent into the image before production use (operator checkout).
-# Tests never pull or call a model.
+# verify_hermes.py runs during the image build (no model call).
 
-ASK_RUNTIME_HOME=/var/lib/auth-broker/ask-hermes-home \
 ASK_IMAGE=mathai-ask-worker:local \
 ASK_JOB=/var/lib/auth-broker/ask-job.json \
+ASK_PROFILE=/tmp/ask-profile-example \
 ASK_WORKER_SCRIPT=$PWD/ask-worker/worker_main.py \
 ASK_STYLE=$PWD/ask-worker/style/SOUL.md \
-ASK_NETWORK=none \
+ASK_INFERENCE=/etc/auth-broker/ask-inference.json \
+ASK_NETWORK=ask-egress \
+ASK_CONTAINER_NAME=ask-manual \
 bash ask-worker/launch.sh
 ```
 
-`ASK_NETWORK=none` is correct for infrastructure tests. Production model egress
-needs a dedicated network that is still not `host`. Distinguish that from this
-repo's tests, which use a fake docker and `HERMES_ASK_STUB=1` and never call a
-provider.
+`ASK_NETWORK=none` is only for infrastructure tests that do not call a provider.
 
 ## Evidence this slice does and does not provide
 
-Does: hidden-sentinel absence in the exact worker payload; cross-principal
-thread denial; grant/ACL change rebuilds the envelope; citation filtering;
-timeout and missing isolation fail closed; launch argv includes the container
-flags; worker process refuses owner `HERMES_HOME` / broker token.
+Does: hidden-sentinel absence from the worker payload; host worker honestly
+reports a readable owner sentinel when the process can open it (no fake
+confinement helper); launch argv ENTRYPOINT+`/job.json`; timeout aborts without
+waiting on `ThreadPoolExecutor` shutdown and removes the named container; output
+cap during pipe read; citation parse/validation; thread bounds and same-thread
+reject; pinned Hermes `AIAgent` import with empty tools and `chat() -> str` over
+a fake `_interruptible_api_call` transport.
 
-Does not: live `AIAgent` against a paid/local model; VPS deploy; MCP tool
-surface; durable thread SQLite; wiring into `create_app`.
+Does not: live paid/local model call; VPS deploy; MCP tool surface; durable
+thread SQLite; wiring into `create_app`; **container proof** when `docker` is
+missing (tests skip with that label). A Docker smoke using a slim image with the
+same ENTRYPOINT is attempted only when the daemon is present.

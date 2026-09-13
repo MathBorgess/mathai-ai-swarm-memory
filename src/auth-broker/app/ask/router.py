@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.ask.isolation import IsolationUnavailable
 from app.ask.service import AskBudget, AskBusy, AskService, AskTimeout
-from app.ask.threads import MemoryThreadStore
+from app.ask.threads import MemoryThreadStore, ThreadBusy
 from app.context.query import AuthError, validate_principal
 
 MAX_BODY = 16384
@@ -79,8 +79,8 @@ def build_router(
             return service.ask(principal, query, thread_id)
         except AuthError as error:
             raise HTTPException(error.status, error.detail) from None
-        except AskBusy as error:
-            raise HTTPException(error.status, "Ask concurrency limit") from None
+        except (AskBusy, ThreadBusy) as error:
+            raise HTTPException(getattr(error, "status", 429), "Ask concurrency limit") from None
         except AskTimeout as error:
             raise HTTPException(error.status, "Ask worker timed out") from None
         except IsolationUnavailable:

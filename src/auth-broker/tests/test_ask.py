@@ -41,20 +41,24 @@ class RecordingWorker:
         return {"text": text, "cited_handles": cited}
 
 
+def _inference(tmp_path, **extra):
+    path = tmp_path / "ask-inference.json"
+    payload = {"transport": "stub", "model": "stub", **extra}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def _isolation(tmp_path):
     from app.ask.isolation import IsolationConfig, worker_root
 
-    home = tmp_path / "ask-runtime"
-    home.mkdir(exist_ok=True)
-    (home / "home").mkdir(exist_ok=True)
     root = worker_root()
     return IsolationConfig(
-        runtime_home=home,
         image="mathai-ask-worker:test",
         launch_script=root / "launch.sh",
         worker_script=root / "worker_main.py",
         style_path=root / "style" / "SOUL.md",
         docker_bin=tmp_path / "docker-not-used",
+        inference_config=_inference(tmp_path),
         network="none",
     )
 
@@ -180,19 +184,51 @@ def test_citations_are_intersected_with_current_envelope(tmp_path):
     result = service.ask(advisor(), "token-a")
     cited = result["items"][0]["cited_handles"]
     allowed = {item["handle"] for item in worker.payloads[0]["envelope"]}
-    assert cited
+    assert cited == []
     assert set(cited) <= allowed
     assert "forged-handle" not in cited
     store.close()
 
 
-def test_timeout_fails_closed_without_personal_hermes(tmp_path):
+def test_empty_citations_are_not_filled_from_envelope(tmp_path):
     store, _ = _ingest(tmp_path)
-    worker = RecordingWorker(delay=0.2)
+    worker = RecordingWorker(cited=[])
+    service, _ = _service(tmp_path, store, worker=worker)
+    result = service.ask(advisor(), "token-a")
+    assert result["items"][0]["cited_handles"] == []
+    assert worker.payloads[0]["envelope"]
+    store.close()
+
+
+def test_valid_subset_of_citations_is_kept(tmp_path):
+    store, _ = _ingest(tmp_path)
+    captured = {}
+
+    class CiteOne:
+        def generate(self, payload):
+            captured["envelope"] = payload["envelope"]
+            handle = payload["envelope"][0]["handle"]
+            return {"text": "ok", "cited_handles": [handle, "forged"]}
+
+    service, _ = _service(tmp_path, store, worker=CiteOne())
+    result = service.ask(advisor(), "token-a")
+    assert result["items"][0]["cited_handles"] == [captured["envelope"][0]["handle"]]
+    store.close()
+
+
+def test_timeout_fails_closed_without_personal_hermes(tmp_path):
+    import time
+
+    store, _ = _ingest(tmp_path)
+    worker = RecordingWorker(delay=0.4)
     service, _ = _service(tmp_path, store, worker=worker, budget=AskBudget(timeout_seconds=0.05, max_concurrency=1))
+    started = time.monotonic()
     with pytest.raises(AskTimeout):
         service.ask(advisor(), "token-a")
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.25
     source = inspect.getsource(AskService)
+    assert "ThreadPoolExecutor" not in source
     assert "adapters.hermes" not in source
     assert "query_as_broker" not in source
     assert "HttpHermesClient" not in source
@@ -279,6 +315,66 @@ def test_concurrency_limit_fails_closed(tmp_path):
     first.join()
     second.join()
     assert any(isinstance(item, (AskBusy, AskTimeout)) for item in errors)
+    store.close()
+
+
+def test_thread_store_bounds_and_sweeps_expired():
+    from app.ask.threads import MemoryThreadStore
+
+    now = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    store = MemoryThreadStore(ttl_seconds=10, max_threads=3, max_threads_per_principal=2)
+    first = store.create(principal_id="p1", workspace_id="w", now=now)
+    store.create(principal_id="p1", workspace_id="w", now=now + timedelta(seconds=1))
+    store.create(principal_id="p1", workspace_id="w", now=now + timedelta(seconds=2))
+    owned = [row for row in store._rows.values() if row.principal_id == "p1"]
+    assert len(owned) == 2
+    assert first.thread_id not in store._rows
+    store.create(principal_id="p2", workspace_id="w", now=now + timedelta(seconds=3))
+    store.create(principal_id="p3", workspace_id="w", now=now + timedelta(seconds=4))
+    assert len(store._rows) == 3
+    later = now + timedelta(seconds=20)
+    assert store.get(list(store._rows)[0], now=later) is None
+    store.sweep(later)
+    assert store._rows == {}
+
+
+def test_same_thread_concurrent_update_is_rejected(tmp_path):
+    import threading
+    import time
+
+    store, _ = _ingest(tmp_path)
+    started = threading.Event()
+
+    class BlockingWorker:
+        def generate(self, payload):
+            started.set()
+            time.sleep(0.3)
+            return {"text": "ok", "cited_handles": []}
+
+    service = AskService(
+        store=store,
+        worker=BlockingWorker(),
+        threads=MemoryThreadStore(),
+        isolation=_isolation(tmp_path),
+        budget=AskBudget(timeout_seconds=2, max_concurrency=2),
+    )
+    first = service.ask(advisor(), "token-a")
+    errors = []
+
+    def run():
+        try:
+            service.ask(advisor(), "token-notes", thread_id=first["thread_id"])
+        except Exception as exc:
+            errors.append(exc)
+
+    a = threading.Thread(target=run)
+    b = threading.Thread(target=run)
+    a.start()
+    started.wait(timeout=1)
+    b.start()
+    a.join()
+    b.join()
+    assert any(isinstance(item, AskBusy) for item in errors)
     store.close()
 
 
