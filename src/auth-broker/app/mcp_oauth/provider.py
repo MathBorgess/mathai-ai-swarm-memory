@@ -22,12 +22,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from app.adapters.sqlite import SqlitePairingStore
 from app.auth.scopes import ALLOWED_SCOPES, ScopeError, classifications_for, effective_scopes, requested_scopes
 from app.mcp_oauth.github import GitHubAuthorizationCode, GitHubIdentityError
-from app.mcp_oauth.store import InvalidOAuthGrant, McpOAuthStore, RefreshReuse, digest
+from app.mcp_oauth.store import (
+    InvalidOAuthGrant, McpOAuthStore, RefreshReuse, RegistrationLimit, TransactionLimit, digest,
+)
 from app.mcp_oauth.tokens import InvalidMcpToken, McpAccessTokenIssuer
 
 MAX_BODY = 16384
 MAX_REDIRECTS = 5
 MAX_CLIENT_NAME = 128
+MAX_PENDING_TX = 64
 CODE_TTL = timedelta(minutes=5)
 ACCESS_TTL = timedelta(minutes=5)
 CLIENT_TTL = timedelta(days=30)
@@ -57,6 +60,7 @@ def build_router(
     public_url: str = "https://a2a.mathai.com.br",
     resource: str | None = None,
     registration_limit: int = 32,
+    transaction_limit: int = MAX_PENDING_TX,
 ) -> McpOAuth:
     if not workspace_id or not public_url:
         raise ValueError("workspace_id and public_url are required")
@@ -64,6 +68,7 @@ def build_router(
     audience = resource or f"{issuer}/mcp"
     metadata_url = f"{issuer}/.well-known/oauth-protected-resource"
     callback_url = f"{issuer}/mcp/oauth/callback"
+    secure_cookie = urlparse(public_url).scheme == "https"
     token_issuer = McpAccessTokenIssuer(
         signing_key=signing_key, issuer=issuer, audience=audience, lifetime=ACCESS_TTL,
     )
@@ -149,35 +154,35 @@ def build_router(
     async def register(request: Request):
         raw = await _read_body(request, {"application/json"})
         now = clock()
+        try:
+            payload = _object(raw)
+            redirects = _redirects(payload.get("redirect_uris"))
+            name = payload.get("client_name", "MCP client")
+            if not isinstance(name, str) or not name or len(name) > MAX_CLIENT_NAME:
+                raise ValueError("invalid_client_metadata")
+            method = payload.get("token_endpoint_auth_method", "none")
+            if method != "none":
+                raise ValueError("invalid_client_metadata")
+            grants = payload.get("grant_types", ["authorization_code", "refresh_token"])
+            responses = payload.get("response_types", ["code"])
+            if grants is not None and set(grants) - {"authorization_code", "refresh_token"}:
+                raise ValueError("invalid_client_metadata")
+            if responses is not None and list(responses) != ["code"]:
+                raise ValueError("invalid_client_metadata")
+        except RedirectError:
+            return _error("invalid_redirect_uri")
+        except (ValueError, TypeError):
+            return _error("invalid_client_metadata")
         with closing(oauth()) as store:
             store.prune(now, registration_window=REGISTRATION_WINDOW)
-            if store.registration_count(now, REGISTRATION_WINDOW) >= registration_limit:
-                return _error("too_many_requests", 429)
-            store.record_registration(now)
             try:
-                payload = _object(raw)
-                redirects = _redirects(payload.get("redirect_uris"))
-                name = payload.get("client_name", "MCP client")
-                if not isinstance(name, str) or not name or len(name) > MAX_CLIENT_NAME:
-                    raise ValueError("invalid_client_metadata")
-                method = payload.get("token_endpoint_auth_method", "none")
-                if method != "none":
-                    raise ValueError("invalid_client_metadata")
-                grants = payload.get("grant_types", ["authorization_code", "refresh_token"])
-                responses = payload.get("response_types", ["code"])
-                if grants is not None and set(grants) - {"authorization_code", "refresh_token"}:
-                    raise ValueError("invalid_client_metadata")
-                if responses is not None and list(responses) != ["code"]:
-                    raise ValueError("invalid_client_metadata")
-            except RedirectError:
-                return _error("invalid_redirect_uri")
-            except (ValueError, TypeError):
-                return _error("invalid_client_metadata")
-            client_id = secrets.token_urlsafe(24)
-            client = store.put_client(
-                client_id=client_id, client_name=name, redirect_uris=redirects,
-                now=now, expires_at=now + CLIENT_TTL,
-            )
+                client = store.register_public_client(
+                    now=now, window=REGISTRATION_WINDOW, limit=registration_limit,
+                    client_id=secrets.token_urlsafe(24), client_name=name,
+                    redirect_uris=redirects, expires_at=now + CLIENT_TTL,
+                )
+            except RegistrationLimit:
+                return _error("too_many_requests", 429)
         return JSONResponse(
             {
                 "client_id": client.client_id,
@@ -224,15 +229,26 @@ def build_router(
                 return _error(str(exc) if str(exc) in {"invalid_request", "invalid_target"} else "invalid_request")
             tx_id = secrets.token_urlsafe(32)
             csrf = secrets.token_urlsafe(32)
-            store.put_transaction(
-                tx_id=tx_id, csrf_hash=digest(csrf), client_id=client.client_id,
-                redirect_uri=redirect_uri, resource=audience, client_state=state,
-                code_challenge=challenge, scopes=scopes, now=now, expires_at=now + TX_TTL,
-            )
-        page = HTMLResponse(_consent_html(client.client_name, client.client_id, redirect_uri, scopes, csrf))
+            try:
+                store.put_transaction(
+                    tx_id=tx_id, csrf_hash=digest(csrf), client_id=client.client_id,
+                    redirect_uri=redirect_uri, resource=audience, client_state=state,
+                    code_challenge=challenge, scopes=scopes, now=now, expires_at=now + TX_TTL,
+                    max_pending=transaction_limit,
+                )
+            except TransactionLimit:
+                return _error("too_many_requests", 429)
+        page = HTMLResponse(
+            _consent_html(client.client_name, client.client_id, redirect_uri, scopes, csrf),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Frame-Options": "DENY",
+                "Content-Security-Policy": "frame-ancestors 'none'",
+            },
+        )
         page.set_cookie(
             COOKIE, tx_id, httponly=True, samesite="lax", path=COOKIE_PATH,
-            secure=request.url.scheme == "https",
+            secure=secure_cookie,
         )
         return page
 
@@ -254,9 +270,11 @@ def build_router(
             ):
                 raise HTTPException(403, "invalid_csrf")
             if form.get("decision") != "allow":
-                store.consume_transaction(tx.id)
+                if not store.transition_transaction(tx.id, "pending_consent", "consumed"):
+                    raise HTTPException(403, "invalid_csrf")
                 return RedirectResponse(_client_redirect(tx.redirect_uri, error="access_denied", state=tx.client_state), 302)
-            store.set_transaction_status(tx.id, "pending_github")
+            if not store.transition_transaction(tx.id, "pending_consent", "pending_github"):
+                raise HTTPException(403, "invalid_csrf")
         location = github.authorization_url(state=tx.id, redirect_uri=callback_url)
         return RedirectResponse(location, 302)
 
@@ -273,8 +291,11 @@ def build_router(
             tx = store.get_transaction(tx_id, now)
             if tx is None or tx.status != "pending_github" or not hmac.compare_digest(tx.id, cookie):
                 return _error("invalid_request")
+            if not store.transition_transaction(tx.id, "pending_github", "exchanging"):
+                return _error("invalid_request")
             client = store.get_client(tx.client_id, now)
             if client is None:
+                store.consume_transaction(tx.id)
                 return _error("invalid_client")
             try:
                 subject = github.exchange_code(code=params.get("code", ""), redirect_uri=callback_url)
@@ -558,6 +579,8 @@ def _redirects(raw) -> tuple[str, ...]:
 
 def _validate_redirect(uri: object) -> str:
     if not isinstance(uri, str) or not uri or len(uri) > 2048 or "#" in uri:
+        raise RedirectError("invalid_redirect_uri")
+    if any(ord(ch) < 32 or ch == "\x7f" for ch in uri):
         raise RedirectError("invalid_redirect_uri")
     parsed = urlparse(uri)
     if parsed.fragment or parsed.username is not None or parsed.password is not None:

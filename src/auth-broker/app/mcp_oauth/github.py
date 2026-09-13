@@ -53,7 +53,9 @@ class HttpGitHubAuthorizationCode:
         if redirect_uri != self.callback_url or not code:
             raise GitHubIdentityError("GitHub identity validation failed")
         try:
-            with httpx.Client(transport=self._transport, timeout=15, trust_env=False) as client:
+            with httpx.Client(
+                transport=self._transport, timeout=15, follow_redirects=False, trust_env=False,
+            ) as client:
                 response = client.post(
                     self.TOKEN_URL,
                     data={
@@ -64,6 +66,8 @@ class HttpGitHubAuthorizationCode:
                     },
                     headers={"Accept": "application/json"},
                 )
+                if response.status_code != 200:
+                    raise GitHubIdentityError("GitHub identity validation failed")
                 payload = response.json()
                 token = payload.get("access_token")
                 if not isinstance(token, str) or not token:
@@ -75,10 +79,13 @@ class HttpGitHubAuthorizationCode:
                         "Accept": "application/vnd.github+json",
                     },
                 )
-                identity.raise_for_status()
+                if identity.status_code != 200:
+                    raise GitHubIdentityError("GitHub identity validation failed")
                 user_id = identity.json().get("id")
                 if not isinstance(user_id, int) or user_id <= 0:
                     raise GitHubIdentityError("GitHub identity validation failed")
                 return str(user_id)
+        except GitHubIdentityError:
+            raise
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             raise GitHubIdentityError("GitHub identity validation failed") from None

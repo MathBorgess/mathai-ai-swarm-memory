@@ -62,7 +62,10 @@ def _auth_mapping(value: object) -> dict:
 
 
 def _idempotency_key(request: Request) -> str:
-    key = request.headers.get("idempotency-key", "")
+    return valid_idempotency_key(request.headers.get("idempotency-key", ""))
+
+
+def valid_idempotency_key(key: str) -> str:
     if not key or len(key) > MAX_IDEMPOTENCY_KEY or "\n" in key or "\r" in key:
         raise HTTPException(400, "Invalid Idempotency-Key")
     return key
@@ -116,6 +119,60 @@ def publish(store: ProposalStore, github, record: ProposalRecord, now: datetime)
     return current
 
 
+def submit_proposal(
+    *,
+    store: ProposalStore,
+    github,
+    principal: dict,
+    payload,
+    idempotency_key: str,
+    now: datetime,
+) -> dict:
+    """Create or replay a T2 proposal using the trusted principal mapping.
+
+    Caller JSON cannot choose principal, workspace, path, or branch.
+    """
+    auth = _auth_mapping(principal)
+    if now >= auth["expires_at"]:
+        raise HTTPException(401, "Missing session")
+    key = valid_idempotency_key(idempotency_key)
+    if payload.propose_scope() not in auth["scopes"]:
+        raise HTTPException(403, "Proposal is outside the granted scope")
+    if github is None:
+        raise HTTPException(503, "Proposal publishing is not configured")
+    proposal_id = secrets.token_urlsafe(16)
+    note = render_note(
+        proposal_id=proposal_id,
+        principal_id=auth["principal_id"],
+        workspace_id=auth["workspace_id"],
+        created_at=now,
+        payload=payload,
+    )
+    try:
+        claimed = store.claim(
+            workspace_id=auth["workspace_id"],
+            principal_id=auth["principal_id"],
+            idempotency_key=key,
+            payload_hash=payload.payload_hash(),
+            proposal_id=proposal_id,
+            namespace=payload.namespace,
+            title=payload.title,
+            note=note,
+            now=now,
+        )
+    except IdempotencyConflict:
+        raise HTTPException(409, "Idempotency key reused with a different payload") from None
+    if claimed.pr_url:
+        return _created(claimed)
+    try:
+        published = publish(store, github, claimed, now)
+    except ProposalGitHubTimeout:
+        raise HTTPException(503, "GitHub proposal adapter unavailable") from None
+    except ProposalGitHubError:
+        raise HTTPException(503, "GitHub proposal adapter unavailable") from None
+    return _created(published)
+
+
 def build_router(*, authorize, store: ProposalStore, github, repository: ProposalRepository,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> APIRouter:
     if repository.allowed_prefix != "pesquisa/tcc/inbox":
@@ -128,55 +185,20 @@ def build_router(*, authorize, store: ProposalStore, github, repository: Proposa
     @router.post("/v1/context/propose")
     def propose(request: Request, body: bytes = Depends(_body)):
         try:
-            auth = _auth_mapping(authorize(request))
+            mapping = authorize(request)
         except HTTPException:
             raise
         except Exception:
             raise HTTPException(401, "Missing session") from None
-        now = clock()
-        if now >= auth["expires_at"]:
-            raise HTTPException(401, "Missing session")
-        key = _idempotency_key(request)
         try:
             payload = parse_proposal(parse_object(body))
         except ProposalTooLarge:
             raise HTTPException(413, "Proposal markdown too large") from None
         except ProposalPayloadError:
             raise HTTPException(400, "Invalid proposal") from None
-        if payload.propose_scope() not in auth["scopes"]:
-            raise HTTPException(403, "Proposal is outside the granted scope")
-        if github is None:
-            raise HTTPException(503, "Proposal publishing is not configured")
-        proposal_id = secrets.token_urlsafe(16)
-        note = render_note(
-            proposal_id=proposal_id,
-            principal_id=auth["principal_id"],
-            workspace_id=auth["workspace_id"],
-            created_at=now,
-            payload=payload,
+        return submit_proposal(
+            store=store, github=github, principal=mapping, payload=payload,
+            idempotency_key=_idempotency_key(request), now=clock(),
         )
-        try:
-            claimed = store.claim(
-                workspace_id=auth["workspace_id"],
-                principal_id=auth["principal_id"],
-                idempotency_key=key,
-                payload_hash=payload.payload_hash(),
-                proposal_id=proposal_id,
-                namespace=payload.namespace,
-                title=payload.title,
-                note=note,
-                now=now,
-            )
-        except IdempotencyConflict:
-            raise HTTPException(409, "Idempotency key reused with a different payload") from None
-        if claimed.pr_url:
-            return _created(claimed)
-        try:
-            published = publish(store, github, claimed, now)
-        except ProposalGitHubTimeout:
-            raise HTTPException(503, "GitHub proposal adapter unavailable") from None
-        except ProposalGitHubError:
-            raise HTTPException(503, "GitHub proposal adapter unavailable") from None
-        return _created(published)
 
     return router

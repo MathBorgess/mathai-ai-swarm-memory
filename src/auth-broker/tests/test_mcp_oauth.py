@@ -60,7 +60,7 @@ def csrf_token(html: str) -> str:
     return match.group(1)
 
 
-def make_env(tmp_path, *, github=None, clock=None, registration_limit=32):
+def make_env(tmp_path, *, github=None, clock=None, registration_limit=32, transaction_limit=64):
     clock = clock or [NOW]
     path = tmp_path / "broker.sqlite3"
     _, pem, jwk, _ = es256_material()
@@ -73,6 +73,7 @@ def make_env(tmp_path, *, github=None, clock=None, registration_limit=32):
         clock=lambda: clock[0],
         public_url=PUBLIC,
         registration_limit=registration_limit,
+        transaction_limit=transaction_limit,
     )
     app = FastAPI()
     app.include_router(provider.router)
@@ -88,7 +89,7 @@ def make_env(tmp_path, *, github=None, clock=None, registration_limit=32):
         github=github,
         clock=clock,
         provider=provider,
-        client=TestClient(app),
+        client=TestClient(app, base_url=PUBLIC),
     )
 
 
@@ -444,6 +445,17 @@ def test_refresh_rotates_and_issues_bearer_not_dpop(tmp_path):
     assert replay.status_code == 400
     assert replay.json() == {"error": "invalid_grant"}
     later = env.client.get("/__probe", headers={"Authorization": f"Bearer {body['access_token']}"})
-    assert later.status_code == 200
+    assert later.status_code == 401
     revoked = env.client.get("/__probe", headers={"Authorization": f"Bearer {tokens['access_token']}"})
     assert revoked.status_code == 401
+    successor = env.client.post(
+        "/mcp/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": registered["client_id"],
+            "refresh_token": body["refresh_token"],
+            "resource": RESOURCE,
+        },
+    )
+    assert successor.status_code == 400
+    assert successor.json() == {"error": "invalid_grant"}

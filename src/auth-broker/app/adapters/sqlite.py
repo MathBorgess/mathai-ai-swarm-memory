@@ -762,8 +762,6 @@ class SqlitePairingStore:
                     token_hash, datetime.fromisoformat(row["created_at"]), family_expires,
                     tuple(row["requested_scopes"].split()),
                 )
-            if row["previous_token_hash"] == token_hash:
-                raise InvalidGrant("Invalid refresh token")
             self._revoke_family_locked(row["family_id"], now)
             reuse = True
         if reuse:

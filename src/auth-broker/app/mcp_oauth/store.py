@@ -19,6 +19,14 @@ class RefreshReuse(InvalidOAuthGrant):
     pass
 
 
+class RegistrationLimit(ValueError):
+    pass
+
+
+class TransactionLimit(ValueError):
+    pass
+
+
 def _aware(at: datetime) -> None:
     if at.utcoffset() is None:
         raise ValueError("A timezone-aware datetime is required")
@@ -172,6 +180,41 @@ class McpOAuthStore:
                 (secrets.token_urlsafe(16), now.isoformat()),
             )
 
+    def register_public_client(
+        self,
+        *,
+        now: datetime,
+        window: timedelta,
+        limit: int,
+        client_id: str,
+        client_name: str,
+        redirect_uris: tuple[str, ...],
+        expires_at: datetime,
+    ) -> OAuthClient:
+        _aware(now)
+        _aware(expires_at)
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            count = self.connection.execute(
+                "SELECT COUNT(*) FROM mcp_oauth_registration_events WHERE occurred_at > ?",
+                ((now - window).isoformat(),),
+            ).fetchone()[0]
+            if int(count) >= limit:
+                raise RegistrationLimit()
+            self.connection.execute(
+                "INSERT INTO mcp_oauth_registration_events VALUES (?, ?)",
+                (secrets.token_urlsafe(16), now.isoformat()),
+            )
+            self.connection.execute(
+                "INSERT INTO mcp_oauth_clients VALUES (?, ?, ?, 'none', ?, ?)",
+                (
+                    client_id, client_name,
+                    json.dumps(list(redirect_uris), separators=(",", ":")),
+                    now.isoformat(), expires_at.isoformat(),
+                ),
+            )
+        return OAuthClient(client_id, client_name, redirect_uris, expires_at)
+
     def put_client(
         self,
         *,
@@ -219,10 +262,19 @@ class McpOAuthStore:
         scopes: tuple[str, ...],
         now: datetime,
         expires_at: datetime,
+        max_pending: int = 64,
     ) -> None:
         _aware(now)
         _aware(expires_at)
         with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            pending = self.connection.execute(
+                """SELECT COUNT(*) FROM mcp_oauth_transactions
+                   WHERE expires_at > ? AND status != 'consumed'""",
+                (now.isoformat(),),
+            ).fetchone()[0]
+            if int(pending) >= max_pending:
+                raise TransactionLimit()
             self.connection.execute(
                 """INSERT INTO mcp_oauth_transactions
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_consent', ?, NULL)""",
@@ -251,6 +303,14 @@ class McpOAuthStore:
                 "UPDATE mcp_oauth_transactions SET status = ?, principal_id = COALESCE(?, principal_id) WHERE id = ?",
                 (status, principal_id, tx_id),
             )
+
+    def transition_transaction(self, tx_id: str, from_status: str, to_status: str) -> bool:
+        with self.connection:
+            changed = self.connection.execute(
+                "UPDATE mcp_oauth_transactions SET status = ? WHERE id = ? AND status = ?",
+                (to_status, tx_id, from_status),
+            )
+            return changed.rowcount == 1
 
     def consume_transaction(self, tx_id: str) -> None:
         with self.connection:
@@ -412,8 +472,6 @@ class McpOAuthStore:
                     row["family_id"], row["principal_id"], row["client_id"], row["resource"],
                     tuple(row["requested_scopes"].split()), family_expires, new_access_jti,
                 )
-            if row["previous_token_hash"] == token_hash:
-                raise InvalidOAuthGrant("Invalid refresh token")
             self._revoke_family_locked(row["family_id"], now)
             reuse = True
         if reuse:

@@ -85,6 +85,35 @@ def test_refresh_rotates_and_reuse_of_older_generation_revokes_family(tmp_path, 
     assert later.json() == {"error": "invalid_grant"}
 
 
+def test_refresh_reuse_of_immediate_predecessor_revokes_family(tmp_path, signing):
+    client, key, path, tokens, clock = _issue(tmp_path, signing)
+    rotated = client.post(
+        "/v1/oauth/token",
+        json={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]},
+        headers=dpop_headers(key, method="POST", path="/v1/oauth/token", now=clock[0]),
+    )
+    assert rotated.status_code == 200
+    reused = client.post(
+        "/v1/oauth/token",
+        json={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]},
+        headers=dpop_headers(key, method="POST", path="/v1/oauth/token", now=clock[0]),
+    )
+    assert reused.json() == {"error": "invalid_grant"}
+    assert client.get(
+        "/v1/context/capabilities",
+        headers=dpop_headers(
+            key, method="GET", path="/v1/context/capabilities",
+            access_token=rotated.json()["access_token"], now=clock[0],
+        ),
+    ).status_code == 401
+    successor = client.post(
+        "/v1/oauth/token",
+        json={"grant_type": "refresh_token", "refresh_token": rotated.json()["refresh_token"]},
+        headers=dpop_headers(key, method="POST", path="/v1/oauth/token", now=clock[0]),
+    )
+    assert successor.json() == {"error": "invalid_grant"}
+
+
 def test_concurrent_refresh_does_not_issue_two_successors(tmp_path, signing):
     client, key, _, tokens, clock = _issue(tmp_path, signing)
 

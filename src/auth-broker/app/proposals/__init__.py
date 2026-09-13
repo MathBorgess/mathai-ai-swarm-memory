@@ -1,7 +1,7 @@
 """S4 propose → branch → draft PR T2. Wiring into api.py is owned by agent A."""
 
 from app.proposals.github import HttpProposalGitHub, ProposalGitHubError, ProposalRepository
-from app.proposals.router import build_router
+from app.proposals.router import build_router, submit_proposal
 from app.proposals.store import ProposalStore
 
 __all__ = [
@@ -10,4 +10,5 @@ __all__ = [
     "ProposalRepository",
     "ProposalStore",
     "build_router",
+    "submit_proposal",
 ]

@@ -22,10 +22,10 @@ not change VPS, DNS or secrets.
   `sid` (family) and `cnf.jkt`. Default lifetime 5 minutes, cap 1 hour.
   Classifications are computed from role; clients cannot set them.
 - Refresh rotation with hashed tokens, one successor, skip-generation reuse
-  detection ([RFC 9700](https://www.rfc-editor.org/rfc/rfc9700) family policy
-  with a concurrent-retry exception documented below). DPoP per
-  [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449). Canonical `htu` comes
-  from `public_url`, never from forwarded Host headers.
+  detection ([RFC 9700](https://www.rfc-editor.org/rfc/rfc9700) family policy).
+  Replaying any prior refresh, including the immediate predecessor, revokes the
+  family. DPoP per [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449). Canonical
+  `htu` comes from `public_url`, never from forwarded Host headers.
 - `GET /v1/context/capabilities` reflects installed operations only. This
   delivery advertises `capabilities`. Query/resolve/propose authenticate, then
   return **503** until C/D routers are registered. Ctx grants never open the
@@ -128,9 +128,9 @@ revoked.
 
 Refresh never extends family/grant expiry. Clients must serialize refresh per
 credential. Presenting the current refresh token issues one successor.
-Presenting the immediate predecessor (concurrent retry) returns
-`invalid_grant` without revoking. Presenting an older generation revokes the
-family.
+Presenting any prior generation, including the immediate predecessor,
+revokes the family (`invalid_grant`). Concurrent refresh of the same
+current token is serialized: one successor, the other is reuse.
 
 ## Wiring of the C/D routers
 
@@ -173,7 +173,8 @@ integration smoke runs on a live clock instead of a frozen one.
 ## Limits
 
 - One workspace per broker process, configured by the operator.
-- Remote MCP Streamable HTTP is mounted by a later factory, not this auth
-  slice. OAuth metadata and `/mcp/oauth/*` are installed with swarm issuance.
+- Remote MCP Streamable HTTP is mounted at `/mcp` when `mcp_github` is set
+  together with a signing key and workspace. OAuth metadata and `/mcp/oauth/*`
+  share that issuance configuration.
 - No Graphiti, no KA Builder, no SaaS.
 - Do not commit `.env`, PEMs, SQLite files or refresh tokens.

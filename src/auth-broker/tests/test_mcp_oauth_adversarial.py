@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import jwt
 
-from app.mcp_oauth.github import HttpGitHubAuthorizationCode
+from app.mcp_oauth.github import GitHubIdentityError, HttpGitHubAuthorizationCode
+from app.mcp_oauth.store import McpOAuthStore
 from test_mcp_oauth import (
     NOW,
     PUBLIC,
@@ -379,3 +382,169 @@ def test_http_github_refuses_custom_hosts():
     assert github.AUTHORIZE_URL == "https://github.com/login/oauth/authorize"
     assert github.TOKEN_URL == "https://github.com/login/oauth/access_token"
     assert github.USER_URL == "https://api.github.com/user"
+
+
+def test_http_github_refuses_redirects_and_non_200_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/oauth/access_token":
+            return httpx.Response(
+                302,
+                headers={"location": "https://evil.example/steal"},
+                json={"access_token": "gho_stolen"},
+            )
+        return httpx.Response(200, json={"id": 1, "login": "x"})
+
+    github = HttpGitHubAuthorizationCode(
+        client_id="cid", client_secret="sec",
+        callback_url=f"{PUBLIC}/mcp/oauth/callback",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        github.exchange_code(code="abc", redirect_uri=f"{PUBLIC}/mcp/oauth/callback")
+        raise AssertionError("redirect must not yield a subject")
+    except GitHubIdentityError:
+        pass
+
+    def forbidden(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"access_token": "gho_nope"})
+
+    denied = HttpGitHubAuthorizationCode(
+        client_id="cid", client_secret="sec",
+        callback_url=f"{PUBLIC}/mcp/oauth/callback",
+        transport=httpx.MockTransport(forbidden),
+    )
+    try:
+        denied.exchange_code(code="abc", redirect_uri=f"{PUBLIC}/mcp/oauth/callback")
+        raise AssertionError("non-200 token must not yield a subject")
+    except GitHubIdentityError:
+        pass
+
+
+def test_invalid_dcr_does_not_burn_quota(tmp_path):
+    env = make_env(tmp_path, registration_limit=1)
+    for _ in range(5):
+        denied = env.client.post(
+            "/mcp/oauth/register",
+            json={"redirect_uris": ["http://evil.example/cb"], "token_endpoint_auth_method": "none"},
+        )
+        assert denied.status_code == 400
+        assert denied.json()["error"] == "invalid_redirect_uri"
+    ok = register_client(env)
+    assert ok["client_id"]
+    limited = env.client.post(
+        "/mcp/oauth/register",
+        json={"redirect_uris": ["http://127.0.0.1:9/cb"], "token_endpoint_auth_method": "none"},
+    )
+    assert limited.status_code == 429
+
+
+def test_redirect_uris_reject_control_characters(tmp_path):
+    env = make_env(tmp_path)
+    for uri in (
+        "https://app.example/cb\r\nLocation: https://evil.example",
+        "https://app.example/cb\n",
+        "https://app.example/cb\0",
+        "https://app.example/cb\tnext",
+    ):
+        denied = env.client.post(
+            "/mcp/oauth/register",
+            json={"redirect_uris": [uri], "token_endpoint_auth_method": "none"},
+        )
+        assert denied.status_code == 400, repr(uri)
+        assert denied.json()["error"] == "invalid_redirect_uri"
+
+
+def test_consent_cookie_is_secure_and_unframed_for_https_public_url(tmp_path):
+    env = make_env(tmp_path)
+    add_principal(env, principal_id="ana", subject="1001", scopes=(READ,))
+    registered = register_client(env)
+    verifier, challenge = pkce_pair()
+    page = env.client.get(
+        "/mcp/oauth/authorize",
+        params={
+            "response_type": "code",
+            "client_id": registered["client_id"],
+            "redirect_uri": REDIRECT,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "resource": RESOURCE,
+            "state": "st",
+            "scope": READ,
+        },
+        follow_redirects=False,
+    )
+    assert page.status_code == 200
+    cookie = page.headers.get("set-cookie", "")
+    assert "Secure" in cookie
+    assert page.headers.get("x-frame-options") == "DENY"
+    assert "frame-ancestors 'none'" in page.headers.get("content-security-policy", "")
+    assert "no-store" in page.headers.get("cache-control", "")
+
+
+def test_pending_transactions_are_capped(tmp_path):
+    env = make_env(tmp_path, transaction_limit=2)
+    registered = register_client(env)
+    verifier, challenge = pkce_pair()
+    params = {
+        "response_type": "code",
+        "client_id": registered["client_id"],
+        "redirect_uri": REDIRECT,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "resource": RESOURCE,
+        "state": "st",
+        "scope": READ,
+    }
+    assert env.client.get("/mcp/oauth/authorize", params=params).status_code == 200
+    assert env.client.get("/mcp/oauth/authorize", params={**params, "state": "st2"}).status_code == 200
+    limited = env.client.get("/mcp/oauth/authorize", params={**params, "state": "st3"})
+    assert limited.status_code == 429
+    assert limited.json()["error"] == "too_many_requests"
+
+
+def test_parallel_callback_issues_one_code(tmp_path):
+    env = make_env(tmp_path)
+    add_principal(env, principal_id="ana", subject="1001", scopes=(READ,))
+    env.github.subject = "1001"
+    registered = register_client(env)
+    verifier, challenge = pkce_pair()
+    page = env.client.get(
+        "/mcp/oauth/authorize",
+        params={
+            "response_type": "code",
+            "client_id": registered["client_id"],
+            "redirect_uri": REDIRECT,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "resource": RESOURCE,
+            "state": "st",
+            "scope": READ,
+        },
+        follow_redirects=False,
+    )
+    csrf = csrf_token(page.text)
+    consent = env.client.post(
+        "/mcp/oauth/consent",
+        data={"csrf": csrf, "decision": "allow"},
+        follow_redirects=False,
+    )
+    github_state = parse_qs(urlparse(consent.headers["location"]).query)["state"][0]
+
+    def once(_):
+        return env.client.get(
+            "/mcp/oauth/callback",
+            params={"code": "ghs-test", "state": github_state},
+            follow_redirects=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        responses = list(workers.map(once, range(2)))
+    issued = [item for item in responses if "code=" in item.headers.get("location", "")]
+    denied = [item for item in responses if item not in issued]
+    assert len(issued) == 1
+    assert len(denied) == 1
+    store = McpOAuthStore(env.path)
+    try:
+        assert store.connection.execute("SELECT COUNT(*) FROM mcp_oauth_codes").fetchone()[0] == 1
+    finally:
+        store.close()
