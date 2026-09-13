@@ -92,13 +92,13 @@ def test_new_and_legacy_databases_migrate_without_duplicating_events(tmp_path):
             assert db.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 1
             assert db.execute("SELECT COUNT(*) FROM grant_audit_events").fetchone()[0] == 2
             assert db.execute("SELECT COUNT(*) FROM broker_sessions").fetchone()[0] == 1
-            assert db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+            assert db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
     finally:
         second.close()
     fresh = open_store(tmp_path / "fresh.sqlite3")
     try:
         with sqlite3.connect(tmp_path / "fresh.sqlite3") as db:
-            assert db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+            assert db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
             assert db.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
     finally:
         fresh.close()

@@ -7,12 +7,13 @@ not change VPS, DNS or secrets.
 ## What is implemented
 
 - Additive SQLite v2 on the existing pairing/session store: principals, grants,
-  grant audit, token families, refresh hashes and DPoP replay. Reopening a
-  migrated database does not duplicate audit rows. Legacy `broker_sessions`,
-  nonces and pairing audit stay intact.
+  grant audit, token families, refresh hashes and DPoP replay. Version 3 adds a
+  cached GitHub login and unkeyed principals (empty JWK columns, never a
+  generated dummy key). Reopening a migrated database does not duplicate audit
+  rows. Legacy `broker_sessions`, nonces and pairing audit stay intact.
 - CLI `mathai-swarm` (store path required, no default file):
-  `principal add|list`, `grant set|list|revoke`, `token revoke --family`.
-  No HTTP or MCP route administers policy.
+  `allow @login`, `principal add|list`, `grant set|list|revoke`,
+  `token revoke --family`. No HTTP or MCP route administers policy.
 - GitHub Device Flow bound to a registered `principal_id` + JWK thumbprint.
   Effective scopes = requested ∩ active grants ∩ role eligibility. Grammar in
   this slice: `ctx:read:pesquisa.tcc` and `ctx:propose:pesquisa.tcc` only.
@@ -57,12 +58,28 @@ Device Flow still starts; the DPoP/ctx flow returns 503.
 ## CLI
 
 ```bash
+mathai-swarm --store /absolute/path/broker.sqlite3 allow @calegario \
+  --role advisor --scope ctx:read:pesquisa.tcc \
+  --scope ctx:propose:pesquisa.tcc --ttl 30
 mathai-swarm --store /absolute/path/broker.sqlite3 principal add \
   --id advisor-01 --subject 12345 --role advisor --jwk '{"kty":"EC",...}'
 mathai-swarm --store /absolute/path/broker.sqlite3 grant set \
   --principal advisor-01 --scope ctx:read:pesquisa.tcc --days 30
 mathai-swarm --store /absolute/path/broker.sqlite3 token revoke --family <sid>
 ```
+
+`allow` resolves `GET https://api.github.com/users/{login}` (the `@` is
+optional), stores the numeric account id as identity, caches the current
+login, and creates principal `github:{id}` without a user JWK. Role, scopes
+and TTL are validated before the GitHub call; principal and grants are written
+in one transaction. Cached login is not an authorization key:
+`SqlitePairingStore.get_principal_by_github_subject` is the stable lookup for
+OAuth. If the username later belongs to a different account id, a new
+`allow` grants that new id and does not move the old row.
+
+Unkeyed principals cannot mint DPoP families until the operator enrolls a
+public JWK (`enroll_principal_key`). `principal add --jwk` and existing keyed
+Device Flow stay as they are. HTTP Device Flow still lives in `api.py`.
 
 Roles: `owner`, `self-harness`, `advisor`. Role limits eligibility only.
 Advisor (and this slice of owner/self-harness) may receive only the two ctx
