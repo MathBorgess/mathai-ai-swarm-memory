@@ -90,9 +90,12 @@ Nesta ordem, sem pular:
 ## 2. Restrições inegociáveis
 
 1. **Allowlist é numérica.** `GITHUB_ALLOWED_USER_ID` é o ID numérico da conta
-   GitHub do dono, nunca o login textual. O mesmo vale para qualquer novo
-   principal: `mathai-swarm allow @login` resolve o ID pela API do GitHub e
-   persiste o número.
+   GitHub do dono, nunca o login textual. Na **primeira** instalação, resolva o
+   ID só leitura com `gh api users/<login-do-dono> --jq .id` e grave no
+   `.env` **antes** de rodar `setup-vps.sh` — `mathai-swarm allow` muta o
+   SQLite de grants e pressupõe broker/CLI já instalados (circular no bootstrap).
+   Depois do broker no ar, novos principals continuam via `mathai-swarm allow
+   @login` (persiste o número).
 2. **Credencial de Hermes é separada e privada.** `HERMES_BROKER_TOKEN` no
    `.env` do broker tem que ser exatamente o valor do peer `auth-broker` em
    `A2A_PEER_TOKENS` no `.env` de Hermes. Nunca gere um segundo valor se
@@ -165,168 +168,168 @@ resultado**: registre como lacuna ("não verificável sem X") no relatório
 final. Este handoff não presume CLIs de assinatura instaladas — reporte
 apenas o que os comandos acima realmente devolveram.
 
-## 4. Upgrade seguro do broker (staging → smoke → promoção)
+## 4. Broker — bootstrap (máquina fria) vs upgrade (já em produção)
 
-**Se `$BROKER` não existir ainda (máquina fria / primeira instalação),** as
-seções 3–5 abaixo assumem um checkout e um `.env` já existentes — o que não
-serve para bootstrap. Nesse caso:
+**Correção sobre `docs/operations/install-auth-broker-vps.md`:** aquele documento
+e o runbook da wiki ainda citam `git fetch origin codex/a2a-github-oauth`. Esse
+branch já está em `origin/main` (seção 0). Use `origin/main` e reporte a
+divergência como contradição encontrada (correção dos originais fica fora
+desta tarefa).
 
-1. Confirme que **não existe já** um processo Hermes rodando com o mesmo bot
-   antes de clonar/iniciar nada aqui — subir um segundo `hermes gateway run`
-   apontando para o mesmo bot/token faz os dois competirem pelo mesmo
-   polling. Verifique com `pgrep -f 'hermes gateway run'` (só PID) antes de
-   iniciar qualquer coisa nova.
-2. Clone `MathBorgess/mathai-ai-swarm-memory` em `$HOME/services/a2a-broker`
-   (ou o caminho local escolhido) e siga a sincronização de identidade Hermes
-   **antes** de qualquer coisa do broker, com o repositório na raiz:
+Variáveis comuns:
+
+```bash
+BROKER="$HOME/services/a2a-broker"          # checkout principal (ponteiro de deploy)
+STATE="$HOME/.mathai-context-engine"
+ENV_FILE="$STATE/auth-broker.env"
+```
+
+Leia caminhos de banco **sem** `source`/`set -a` no `.env` de produção (evita
+vazar variáveis de staging para o shell e vice-versa):
+
+```bash
+env_path() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"'\'''; }
+MAIN_DB="$(env_path AUTH_BROKER_DATABASE_PATH)"
+CTX_DB="$(env_path AUTH_BROKER_CONTEXT_SQLITE)"
+PROP_DB="$(env_path AUTH_BROKER_PROPOSAL_SQLITE)"
+```
+
+### 4.a Bootstrap — primeira instalação (`$BROKER` ainda não existe)
+
+**Nunca** suba produção em `9910` como único smoke numa máquina fria. Mesmo
+sem upgrade anterior, o fluxo é **staging isolado em `9911` → testes →
+promoção** — não há banco de produção para “backup de upgrade”; não simule
+backup de arquivo inexistente.
+
+1. Confirme que **não há** segundo `hermes gateway run` competindo pelo mesmo
+   bot (`pgrep -f 'hermes gateway run'` — só PID).
+2. Clone `MathBorgess/mathai-ai-swarm-memory` em `$BROKER`, `git -C "$BROKER"
+   checkout main`, e **na raiz do clone**:
    ```bash
    ./hermes-sync-identity.sh pull
    ./hermes-sync-identity.sh link
    bash tests/test-hermes-identity-sync.sh
    ```
-   Isto religa os caminhos canônicos (`SOUL.md`, `memories/*`) para
-   `src/hermes-identity/`, sem duplicar a identidade num segundo lugar.
-3. Crie `$STATE/auth-broker.env` (`$STATE = $HOME/.mathai-context-engine`,
-   `install -d -m 700 "$STATE"` primeiro) com os segredos exigidos por
-   `scripts/setup-vps.sh` — **nomes**, não valores, aqui:
+3. `install -d -m 700 "$STATE"`. Crie `$ENV_FILE` com as chaves exigidas por
+   `setup-vps.sh` (nomes aqui, nunca valores neste prompt):
    `AUTH_BROKER_DATABASE_PATH`, `AUTH_BROKER_AUDIENCE`, `HERMES_A2A_URL`,
    `HERMES_BROKER_TOKEN`, `GITHUB_OAUTH_CLIENT_ID`,
-   `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_ALLOWED_USER_ID` — mais
-   `AUTH_BROKER_CONTEXT_SQLITE`/`AUTH_BROKER_PROPOSAL_*` e
-   `AUTH_BROKER_ASK_*`/`AUTH_BROKER_WORKSPACE_ID`/`AUTH_BROKER_JWT_SIGNING_KEY*`
-   se as fatias opcionais S3/S4, `ask` ou `/mcp` remoto forem instaladas
-   agora. Cada valor é obtido localmente (painel GitHub OAuth App, `.env` de
-   Hermes para o par de `HERMES_BROKER_TOKEN`) — nunca gerado ou inventado
-   por um agente. `GITHUB_ALLOWED_USER_ID` é o ID numérico, resolvido via
-   `mathai-swarm allow @login` depois que o broker existir, não digitado à
-   mão a partir do username.
-4. Rode `PYTHON_BIN=python3.12 scripts/setup-vps.sh "$STATE/auth-broker.env"`
-   — isto cria a venv e roda a suíte de testes real antes de qualquer
-   `uvicorn` subir. Só depois disso passar, siga a seção 4 abaixo para a
-   primeira promoção (não há staging anterior para comparar; trate o
-   primeiro boot em `9910` como o próprio smoke).
+   `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_ALLOWED_USER_ID`, mais opcionais
+   S3/S4/`ask`/`/mcp` se forem instalados já nesta passagem.
+   - `GITHUB_ALLOWED_USER_ID`: `gh api users/<login-do-dono> --jq .id` (somente
+     leitura; grave no `.env` antes do setup).
+   - Segredos ausentes podem ser **gerados ou copiados localmente** (OAuth App,
+     par `auth-broker` em `A2A_PEER_TOKENS` de Hermes, chaves ES256 para MCP).
+     Valores **já presentes** no `.env` ou em Hermes devem ser **preservados**,
+     nunca rotacionados por conveniência. Nunca imprima segredo.
+4. Se `ask`/`/mcp` forem parte desta instalação, configure **antes** do primeiro
+   `uvicorn` conforme `docs/operations/swarm-ask.md` (seção *Operator launch*):
+   pin `ask-worker/HERMES_PIN`, `docker build -t mathai-ask-worker:local
+   ask-worker` (ou `install_hermes.sh`), testes de wrapper com Docker real
+   **opcionais** — se o daemon não existir, marque “Docker indisponível” no
+   relatório; arquivo de inferência dedicado (`0400`, sem mounts de
+   `~/.hermes`/memória pessoal); `docker network create ask-egress` (nunca
+   `host`). O broker **valida** rede/imagem/config na subida e **recusa**
+   iniciar com isolamento inválido — não assuma “503 nas rotas” como único
+   sintoma aceitável se o processo deveria ter falhado fechado.
+5. Na raiz do clone: `PYTHON_BIN=python3.12 src/auth-broker/scripts/setup-vps.sh
+   "$ENV_FILE"` — cria venv **deste checkout** e roda `pytest tests/ -q` do
+   broker (portão de protocolo/SQLite/MCP). Falha → pare.
+6. Crie `$BACKUP="$STATE/backups/$(date -u +%Y%m%dT%H%M%SZ)"; install -d -m 700
+   "$BACKUP"` (sem backup SQLite — bootstrap). Siga **4.c** (worktree de release,
+   `.env` de staging com caminhos de SQLite **novos** sob `$STATE/staging-db/…`),
+   smoke em `9911`, depois **4.d** promoção para `9910`. Registre o mapeamento
+   de rollback (seção 5) antes da promoção.
 
-**Correção sobre `docs/operations/install-auth-broker-vps.md`:** aquele
-documento e o runbook da wiki (`2026-09-09-a2a-oauth-broker-runbook-vps.md`)
-ainda instruem `git fetch origin codex/a2a-github-oauth`. Esse branch já foi
-mergeado em `origin/main` no commit citado na seção 0. Busque `origin/main`,
-não o branch antigo — e reporte esta divergência de documentação como
-contradição encontrada, para alguém corrigir os dois documentos originais
-(fora do escopo de escrita desta tarefa).
+### 4.b Upgrade — broker já rodando
 
-```bash
-BROKER="$HOME/services/a2a-broker"
-STATE="$HOME/.mathai-context-engine"
-ENV_FILE="$STATE/auth-broker.env"
+Pré-condição: `$ENV_FILE` e `$MAIN_DB` existem; processo em `9910` (ou
+documente “sem broker — tratar como 4.a”).
 
-git -C "$BROKER" fetch origin main
-git -C "$BROKER" rev-parse origin/main   # confirme o SHA antes de trocar
+`git -C "$BROKER" fetch origin main` e confirme o SHA alvo antes de staging.
 
-# só prossiga se o SHA atual (seção 3) for diferente e mais antigo
-```
-
-**Se `ask` (Hermes isolado) estiver configurado** (`AUTH_BROKER_ASK_*`
-presentes no `.env`), o pré-requisito de rede é a rede docker dedicada
-descrita em `docs/operations/swarm-ask.md`
-(`docker network create ask-egress` — nunca `host`). Isto **não** é algo
-para configurar aqui pela primeira vez nesta tarefa: o código
-(`app/main.py`, `optional_ask`/`IsolationConfig.validate()`) já falha
-fechado — se `AUTH_BROKER_ASK_NETWORK` apontar para uma rede ausente ou for
-`host`, o broker recusa subir o worker (`IsolationUnavailable`, HTTP 503 nas
-chamadas de `ask`) em vez de rodar sem isolamento. Confirme apenas que a rede
-citada em `AUTH_BROKER_ASK_NETWORK` existe (`docker network inspect
-"$ASK_NETWORK"`) antes de promover, sem recriar rede que já existe nem trocar
-para `host` "para simplificar".
-
-Antes de tocar produção, faça backup do estado atual. **Não use `cp` num
-SQLite vivo**: se o banco estiver em modo WAL, `cp` do arquivo principal sozinho
-perde escritas que ainda estão em `-wal`/`-shm`, e uma cópia a frio de um banco
-em uso pode ficar corrompida. Use o backup online do próprio SQLite
-(`sqlite3 origem ".backup destino"`), que é seguro com o banco em uso porque
-segue o protocolo de página do SQLite. Descubra os bancos **realmente
-configurados** (nunca um glob `*.sqlite3`, que pode pegar arquivo errado ou
-perder um caminho fora de `$STATE`):
+**Backup (fail-closed em upgrade):** use `sqlite3 … ".backup …"` (nunca `cp`
+do `.sqlite3` vivo — perde WAL). Um `.backup` online **por arquivo** não
+garante snapshot transacional **entre** vários bancos; na **promoção**, pare
+escritores (broker/Hermes conforme política local) ou aceite que backups
+feitos com tudo no ar podem divergir entre `AUTH_BROKER_DATABASE_PATH`,
+`AUTH_BROKER_CONTEXT_SQLITE` e `AUTH_BROKER_PROPOSAL_SQLITE`.
 
 ```bash
 BACKUP="$STATE/backups/$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 700 "$BACKUP"
 umask 077
-
 cp -p "$ENV_FILE" "$BACKUP/auth-broker.env"
 
-# Bancos configurados de verdade — leia do próprio .env carregado, não adivinhe.
-# AUTH_BROKER_DATABASE_PATH é sempre obrigatório; CONTEXT_SQLITE e
-# PROPOSAL_SQLITE só existem se as fatias S3/S4 estiverem instaladas.
-set -a; . "$ENV_FILE"; set +a
-DBS=()
-for var in AUTH_BROKER_DATABASE_PATH AUTH_BROKER_CONTEXT_SQLITE AUTH_BROKER_PROPOSAL_SQLITE; do
-  path="${!var:-}"
-  [[ -n "$path" && -f "$path" ]] && DBS+=("$var:$path")
-done
-[[ ${#DBS[@]} -gt 0 ]] || { echo 'erro: nenhum banco configurado encontrado — pare, não prossiga com upgrade sem backup' >&2; exit 1; }
+backup_one() {
+  local var="$1" src="$2" dest="$BACKUP/${var}.sqlite3"
+  [[ -n "$src" ]] || return 0
+  if [[ ! -f "$src" ]]; then
+    if [[ "$var" == AUTH_BROKER_DATABASE_PATH ]]; then
+      echo "erro: $var configurado mas arquivo ausente — pare (upgrade)" >&2
+      exit 1
+    fi
+    echo "aviso: $var configurado mas arquivo ausente — opcional, pulando" >&2
+    return 0
+  fi
+  sqlite3 "$src" ".backup '$dest'" || { echo "erro: backup falhou $var" >&2; exit 1; }
+  sqlite3 "$dest" "PRAGMA integrity_check;" | grep -qx ok \
+    || { echo "erro: integrity_check $var" >&2; exit 1; }
+  sqlite3 "$src" ".schema" > "$BACKUP/${var}.schema-before.sql"
+}
 
-for entry in "${DBS[@]}"; do
-  var="${entry%%:*}"; src="${entry#*:}"; name=$(basename "$src")
-  sqlite3 "$src" ".backup '$BACKUP/$name'" || { echo "erro: backup online falhou para $var ($src)" >&2; exit 1; }
-  sqlite3 "$BACKUP/$name" "PRAGMA integrity_check;" | grep -qx ok \
-    || { echo "erro: integrity_check falhou para a cópia de $var" >&2; exit 1; }
-  sqlite3 "$src" ".schema" > "$BACKUP/$name.schema-before.sql"
-done
+backup_one AUTH_BROKER_DATABASE_PATH "$MAIN_DB"
+backup_one AUTH_BROKER_CONTEXT_SQLITE "$CTX_DB"
+backup_one AUTH_BROKER_PROPOSAL_SQLITE "$PROP_DB"
 chmod 600 "$BACKUP"/*
 ```
 
-Nenhum comando de backup usa `|| true`: uma falha aqui deve **parar** o
-upgrade, não seguir silenciosamente sem backup. `.schema` e o resultado de
-`integrity_check` (`ok`/não-`ok`, um booleano) são os únicos dados impressos —
-nunca `SELECT` de linhas, nunca `dump` completo, nunca conteúdo de tabela.
-Diretório e arquivos ficam `700`/`600`, privados ao usuário do broker.
+Nenhum `|| true` silencioso. Imprima só `integrity_check` ok/não-ok e caminhos
+de artefato, nunca conteúdo de tabela.
 
-**Staging isolado, nunca a produção viva.** `install-auth-broker-vps.md`
-seção 4 assume um único checkout compartilhado entre staging e produção
-(`git switch --detach` no mesmo diretório); isto contende com produção (o
-mesmo `.venv`, o mesmo SQLite) e é evitado aqui. Use um checkout **separado**
-(worktree ou clone novo), venv própria, `.env` e SQLite **copiados** —
-produção continua rodando no checkout, venv e banco antigos, sem ninguém
-tocar neles, até staging provar que está bom:
+### 4.c Staging isolado (fresh **e** upgrade)
+
+Produção continua no checkout/venv/bancos atuais até promoção.
 
 ```bash
 RELEASE="$STATE/releases/$(date -u +%Y%m%dT%H%M%SZ)"
-git -C "$BROKER" fetch origin main
-git worktree add --detach "$RELEASE" origin/main   # checkout novo, não mexe no $BROKER atual
+UPGRADE_MAP="$BACKUP/upgrade-map.env"   # bootstrap: registre mapa manual equivalente
+git -C "$BROKER" worktree add --detach "$RELEASE" origin/main
 
 STAGE_ENV="$BACKUP/staging.env"
 cp -p "$ENV_FILE" "$STAGE_ENV"
-# Editar $STAGE_ENV: AUTH_BROKER_DATABASE_PATH (e CONTEXT_SQLITE/PROPOSAL_SQLITE
-# se instalados) devem apontar para as CÓPIAS restauradas abaixo, nunca para o
-# caminho de produção — staging nunca escreve no banco vivo.
-STAGE_STATE="$STATE/staging-db"
+STAGE_STATE="$STATE/staging-db/$(basename "$RELEASE")"
 install -d -m 700 "$STAGE_STATE"
-for entry in "${DBS[@]}"; do
-  name=$(basename "${entry#*:}")
-  cp -p "$BACKUP/$name" "$STAGE_STATE/$name"   # cópia do backup íntegro, não do arquivo vivo
-done
+```
 
+**Reescreva** `$STAGE_ENV` (editor, não automatize segredo):
+
+- `AUTH_BROKER_DATABASE_PATH` → `$STAGE_STATE/AUTH_BROKER_DATABASE_PATH.sqlite3`
+  (mesmo padrão por **nome de variável** para context/proposal se instalados).
+- Paths de `AUTH_BROKER_JWT_SIGNING_KEY*` → cópias sob `$STAGE_STATE/`, nunca
+  arquivos de produção.
+- Desabilite efeitos externos: `HERMES_A2A_URL` de teste/stub; não dispare
+  `ask` contra corpus de produção; não inicie segundo Hermes pessoal.
+
+**Validação obrigatória** (falha → pare antes de `setup-vps.sh`):
+
+```bash
+stage_main="$(grep -E '^AUTH_BROKER_DATABASE_PATH=' "$STAGE_ENV" | cut -d= -f2- | tr -d '"'\''')"
+[[ "$stage_main" == "$STAGE_STATE/"* ]] || { echo 'erro: staging DB ainda aponta produção' >&2; exit 1; }
+[[ "$stage_main" != "$MAIN_DB" ]] || { echo 'erro: MAIN_DB igual produção' >&2; exit 1; }
+```
+
+Copie para staging **só** a partir de `$BACKUP/AUTH_BROKER_*.sqlite3` (upgrade)
+ou crie arquivos novos nos paths de staging (bootstrap).
+
+```bash
 PYTHON_BIN=python3.12 "$RELEASE/src/auth-broker/scripts/setup-vps.sh" "$STAGE_ENV"
 ```
 
-`setup-vps.sh` cria a venv **dessa release** e roda `pytest tests/ -q` da
-suíte real do broker (`test_dpop.py`, `test_sqlite.py`, `test_mcp_oauth*.py`,
-`test_grants.py`, `test_allow.py`, entre outras) — isto **é** o teste de
-protocolo/SQLite/MCP/identidade exigido por `AGENTS.md` ("Testes de protocolo
-e SQLite são obrigatórios antes de qualquer deploy"). Se o script sair
-diferente de zero, **pare**: não promova com testes falhando, e não troque por
-um curl solto. Não existe smoke de DPoP com placeholder — um DPoP inválido
-(header ausente ou prova errada) só prova que o endpoint rejeita entrada
-inválida, não que o protocolo funciona; a prova real já está nos testes
-automatizados acima. Se quiser um teste de fumaça adicional autenticado,
-gere um par de chaves de teste com o próprio pacote (`mathai-swarm-mcp
-show-key` ou o helper de teste do broker) e rode a chamada real com prova
-DPoP calculada, guardando a chave privada de teste só localmente, nunca em
-argumento de comando.
+Registre em `$UPGRADE_MAP`: `OLD_RELEASE=…`, `NEW_RELEASE=$RELEASE`, caminhos
+de produção e prefixo `$BACKUP`.
 
-Só depois de `setup-vps.sh` e a suíte de testes passarem, suba o servidor de
-staging numa porta separada (`9911`) usando a venv **da release nova**,
-apontando para as cópias de banco (nunca para produção):
+Smoke staging (`9911`, venv **da release**, `$STAGE_ENV`):
 
 ```bash
 nohup /bin/bash -lc "cd '$RELEASE/src/auth-broker' && set -a && . '$STAGE_ENV' && set +a && exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9911" \
@@ -335,67 +338,54 @@ sleep 2
 curl -fsS http://127.0.0.1:9911/.well-known/agent-card.json | jq '.securitySchemes'
 ```
 
-Staging não deve chamar Hermes real nem qualquer serviço externo com efeito
-colateral (não reusar `HERMES_BROKER_TOKEN` de produção contra a instância
-real de Hermes a partir do staging) — se `optional_ask`/S3/S4 estiverem
-configurados no `.env` de staging, aponte para um contexto de teste, não para
-o de produção.
+### 4.d Promoção para produção
 
-Só depois do smoke em `9911` (card público correto + suíte de testes verde),
-promova: identifique o PID em `9910` via `netstat -ltnp` (só para localizar o
-PID a matar, não para imprimir a linha de comando completa em log
-compartilhado), pare-o com `kill -TERM <pid>`, pare o staging em `9911`, e
-suba a **release nova** (não staging, o mesmo checkout `$RELEASE` com o
-`$ENV_FILE` de produção real, apontando para o SQLite de produção real) com
-`--port 9910`. Só então troque o ponteiro `$BROKER` (symlink ou variável de
-deploy) para `$RELEASE`. O Tunnel já encaminha `a2a.mathai.com.br` para
-`127.0.0.1:9910` — não precisa reconfigurar o hostname existente.
+Somente após `setup-vps.sh` verde **e** card em `9911`:
 
-Verificação pós-promoção (sem credencial, não vaza nada):
+1. Pare escritores se for consistir vários SQLite (ver backup acima).
+2. `kill -TERM` no PID de `9910` (via `netstat -ltnp`, sem logar argv).
+3. Pare staging `9911`.
+4. Suba `$RELEASE` com `$ENV_FILE` de **produção**, porta `9910`.
+5. Atualize ponteiro de deploy/systemd **sem** substituir diretório real por
+   symlink às cegas.
 
 ```bash
-curl -fsS https://a2a.mathai.com.br/.well-known/agent-card.json \
-  | jq '{url, security}'
-git -C "$BROKER" rev-parse HEAD   # registre este SHA como "versão em produção agora"
+curl -fsS https://a2a.mathai.com.br/.well-known/agent-card.json | jq '{url, security}'
+git -C "$RELEASE" rev-parse HEAD
 ```
+
+### 4.e Testes — o que conta como prova
+
+| Prova | Comando / artefato |
+|--------|-------------------|
+| Identidade Hermes | `bash tests/test-hermes-identity-sync.sh` (raiz do repo) |
+| Protocolo broker | `src/auth-broker/scripts/setup-vps.sh` → `pytest tests/ -q` |
+| MCP adapter | Suíte em `src/swarm-mcp/` (`pyproject.toml`); Docker/live só se daemon presente |
+| Fumaça HTTP autenticada | Opcional se `command -v mathai-swarm-mcp`; fluxo em `docs/operations/swarm-mcp.md` |
+| DPoP curl inventado | **Inválido** como prova de protocolo |
 
 ## 5. Rollback
 
-Se o smoke em `9911` falhar, ou a promoção quebrar o card público, o rollback
-restaura o **checkout antigo com a venv antiga** — nunca `git switch` no
-mesmo diretório trocando só o código, deixando a venv nova (com dependências
-possivelmente incompatíveis) para trás:
+Pré-condição: `$UPGRADE_MAP` com `OLD_RELEASE`, `NEW_RELEASE`, caminhos de
+produção (`MAIN_DB`, …) e `$BACKUP`.
 
-```bash
-STATE="$HOME/.mathai-context-engine"
-ENV_FILE="$STATE/auth-broker.env"
-OLD_RELEASE="<caminho da release anterior, registrado antes do upgrade — o \$BROKER de antes de trocar o ponteiro>"
+1. Pare broker (e Hermes se compartilha SQLite) — **sem** escritores.
+2. Se a release nova migrou schema em **produção**, restaure de
+   `$BACKUP/AUTH_BROKER_<VAR>.sqlite3`; writes após o backup podem perder-se —
+   **reporte/reconcilie**, não sobrescreva silenciosamente.
+3. Compare schema **por caminho explícito** do mapa (não glob):
+   ```bash
+   sqlite3 "$MAIN_DB" ".schema" > /tmp/schema-prod-now.sql
+   diff -u "$BACKUP/AUTH_BROKER_DATABASE_PATH.schema-before.sql" /tmp/schema-prod-now.sql \
+     || echo 'schema MAIN mudou — investigue antes de declarar rollback completo'
+   ```
+4. Suba `$OLD_RELEASE` com venv antiga e `$ENV_FILE` de produção.
+5. Restaure unit/systemd original (cwd, env file, porta) sem imprimir argv com
+   segredo.
+6. `curl -fsS https://a2a.mathai.com.br/.well-known/agent-card.json | jq '.url'`
 
-# pare o processo problemático em 9910/9911 (kill -TERM pelo PID do netstat -ltnp; não logue a linha de comando inteira)
-
-# ponteiro de deploy volta para a release antiga, com a venv antiga intacta
-# (não recrie a venv aqui — se ela precisar ser recriada, o rollback falhou)
-test -x "$OLD_RELEASE/src/auth-broker/.venv/bin/uvicorn" || { echo 'erro: venv da release anterior ausente, rollback não pode prosseguir assim' >&2; exit 1; }
-
-nohup /bin/bash -lc "cd '$OLD_RELEASE/src/auth-broker' && set -a && . '$ENV_FILE' && set +a && exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9910" \
-  >"$STATE/auth-broker.log" 2>&1 &
-sleep 2
-curl -fsS https://a2a.mathai.com.br/.well-known/agent-card.json | jq '.url'
-
-# compatibilidade de schema: compare a cópia de backup (não o banco vivo) com o estado atual
-sqlite3 "$STAGE_STATE"/*.sqlite3 ".schema" > /tmp/schema-rollback-check.sql 2>/dev/null
-diff "$BACKUP"/*.schema-before.sql /tmp/schema-rollback-check.sql \
-  || echo 'schema mudou entre backup e release anterior — investigue antes de aceitar o rollback como completo'
-```
-
-Se a release nova já tiver rodado migração de schema contra o banco de
-produção real antes de o rollback ser decidido, o rollback não é só trocar
-código/venv — restaure também o SQLite de produção a partir do backup
-`.backup` da seção 4 (com o broker parado, nunca com o processo escrevendo)
-antes de subir a release antiga. Não delete a release nova nem os artefatos
-de staging durante a janela de observação — remova-os manualmente, depois de
-confirmar que nenhuma porta ou processo os usa, nunca com `rm -rf` do
-diretório de estado inteiro.
+Não apague `$NEW_RELEASE` até confirmar estabilidade. Nunca `rm -rf` em
+`$STATE` inteiro.
 
 ## 6. Preparar `reports.mathai.com.br` atrás de Cloudflare Access — sem publicar nada
 

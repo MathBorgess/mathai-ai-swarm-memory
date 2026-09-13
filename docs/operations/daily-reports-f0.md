@@ -4,7 +4,7 @@
 
 **Desenho de produto:** nota privada `mathai-wiki/estudos/context-engineering/2026-09-13-daily-reports-ciclo-self-improvement.md` (hostname `reports.mathai.com.br`, Access com OTP do dono antes de qualquer conteúdo privado).
 
-**Handoff operacional VPS (sessão 02):** [daily-reports-vps-handoff.md](./daily-reports-vps-handoff.md) — é um **prompt** para quem tem acesso à VPS, não evidência executada. A sessão 02 não rodou nenhum comando na VPS; ela produziu instruções. `REPORTS_PORT` continua **TBD para F3** (não é decisão da sessão 02). Este F0 para aqui: pesquisa e inventário, sem implementar `src/reports/`, cron, vault ou publicação de HTML.
+**Handoff operacional VPS (sessão 02, correções operacionais sessão 04):** [daily-reports-vps-handoff.md](./daily-reports-vps-handoff.md) — é um **prompt** para quem tem acesso à VPS, não evidência executada. Bootstrap e upgrade usam **staging em `9911` antes de produção**; backup SQLite nomeado por variável de config (`AUTH_BROKER_*`), não por `basename` colidente. A sessão 02 não rodou nenhum comando na VPS; ela produziu instruções. `REPORTS_PORT` continua **TBD para F3** (não é decisão da sessão 02). Este F0 para aqui: pesquisa e inventário, sem implementar `src/reports/`, cron, vault ou publicação de HTML.
 
 ---
 
