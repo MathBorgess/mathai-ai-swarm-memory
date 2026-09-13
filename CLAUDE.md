@@ -1,4 +1,4 @@
-# mathai-context-engine — guia de contexto
+# mathai-ai-swarm-memory — guia de contexto
 
 ## O que este repositório é
 

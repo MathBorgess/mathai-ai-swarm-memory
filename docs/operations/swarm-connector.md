@@ -108,8 +108,7 @@ url = "https://a2a.mathai.com.br/mcp"
 auth = "oauth"
 ```
 
-`codex mcp login mathai-swarm`. Callback típico `http://127.0.0.1/callback`
-(porta efémera ou `oauth.callback_port`).
+`codex mcp login mathai-swarm --oauth-client-registration dcr`. Callback típico `http://127.0.0.1/callback` (porta efémera ou `oauth.callback_port`). Não há Client ID Metadata Documents.
 
 ## Testes
 

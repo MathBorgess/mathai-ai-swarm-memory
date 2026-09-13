@@ -1,4 +1,4 @@
-# AGENTS — mathai-context-engine
+# AGENTS — mathai-ai-swarm-memory
 
 ## Propósito
 
@@ -36,7 +36,7 @@ Após Hermes alterar memória, rode `./hermes-sync-identity.sh push`. Antes de i
 
 ## A2A atual e destino
 
-`https://a2a.mathai.com.br` é o origin público único do broker; Hermes continua privado em `127.0.0.1:9900`. O cliente descobre o card no mesmo origin, executa Device Flow e usa grant A2A curto. Nunca entregue o bearer Hermes ao cliente.
+`https://a2a.mathai.com.br` é o origin público único do broker; MCP remoto vive em `https://a2a.mathai.com.br/mcp`. Hermes continua privado em `127.0.0.1:9900`. O cliente MCP descobre OAuth no mesmo origin, executa authorization code + PKCE e usa grant curto com audience `/mcp`. Device Flow+DPoP permanece o caminho do operador. Nunca entregue o bearer Hermes ao cliente.
 
 ## Verificação mínima
 

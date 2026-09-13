@@ -32,7 +32,7 @@ agente pessoal -- HTTPS + Device Flow --> a2a.mathai.com.br (broker, 127.0.0.1:9
 Os caminhos abaixo usam o usuário `box`; ajuste somente o prefixo caso a VPS use outro usuário. Não cole valores secretos no comando: abra o editor privado local e preencha o arquivo diretamente.
 
 ```bash
-git clone https://github.com/MathBorgess/mathai-context-engine.git "$HOME/src/mathai-context-engine"
+git clone https://github.com/MathBorgess/mathai-ai-swarm-memory.git "$HOME/src/mathai-context-engine"
 git -C "$HOME/src/mathai-context-engine" fetch origin codex/a2a-github-oauth
 git -C "$HOME/src/mathai-context-engine" worktree add --detach \
   "$HOME/services/a2a-broker" origin/codex/a2a-github-oauth
