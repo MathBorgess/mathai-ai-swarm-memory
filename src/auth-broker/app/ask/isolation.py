@@ -111,7 +111,9 @@ def effective_container_argv(entrypoint: list[str], command: list[str]) -> list[
     return list(entrypoint) + list(command)
 
 
-class ContainerWorker:
+class ContainerJob:
+    """One generate() invocation. Abort and cleanup never touch another job."""
+
     def __init__(self, isolation: IsolationConfig):
         self.isolation = isolation
         self._container_name: str | None = None
@@ -168,7 +170,7 @@ class ContainerWorker:
             except OSError as error:
                 raise IsolationUnavailable("Ask worker failed closed") from error
             self._proc = proc
-            stdout, stderr, timed_out, capped = _read_capped(proc, timeout=timeout, max_bytes=max_bytes)
+            stdout, _stderr, timed_out, capped = _read_capped(proc, timeout=timeout, max_bytes=max_bytes)
             if timed_out or proc.poll() is None:
                 self.abort()
                 raise WorkerTimeout("Ask worker timed out")
@@ -176,8 +178,7 @@ class ContainerWorker:
                 self.abort()
                 raise IsolationUnavailable("Ask worker output exceeded budget")
             if proc.returncode != 0:
-                err = stderr.decode("utf-8", errors="replace").strip()
-                raise IsolationUnavailable(err or "Ask worker failed closed")
+                raise IsolationUnavailable("Ask worker failed closed")
             try:
                 result = json.loads(stdout.decode("utf-8"))
             except ValueError as error:
@@ -195,6 +196,17 @@ class ContainerWorker:
             if self._container_name:
                 _remove_container(docker, self._container_name)
             self._container_name = None
+
+
+class ContainerWorker:
+    def __init__(self, isolation: IsolationConfig):
+        self.isolation = isolation
+
+    def invocation(self) -> ContainerJob:
+        return ContainerJob(self.isolation)
+
+    def generate(self, payload: dict) -> dict:
+        return self.invocation().generate(payload)
 
 
 def _reject_owner_secret(path: Path, label: str) -> None:

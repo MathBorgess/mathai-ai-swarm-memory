@@ -1,4 +1,10 @@
-"""Pinned Hermes wrapper: real AIAgent import, fake model transport, no paid call."""
+"""Pinned Hermes wrapper: real AIAgent import, fake model transport, no paid call.
+
+Ordinary pytest skips when the pin checkout is missing. It does not git-fetch or
+pip-install into the user environment. To execute the wrapper tests: point
+HERMES_ASK_SRC at a checkout of the HERMES_PIN commit, or set
+HERMES_ASK_BOOTSTRAP=1 to run ask-worker/install_hermes.sh (network + pip).
+"""
 
 from __future__ import annotations
 
@@ -42,16 +48,24 @@ def _hermes_src() -> Path:
                 if got != pin["commit"]:
                     continue
             return path
-    dest = Path("/tmp/hermes-agent-pin")
-    script = worker_root() / "install_hermes.sh"
-    env_vars = {**os.environ, "HERMES_ASK_SRC": str(dest)}
-    completed = subprocess.run(["bash", str(script)], env=env_vars, capture_output=True, text=True, timeout=180)
-    if completed.returncode != 0 or not (dest / "run_agent.py").is_file():
-        pytest.skip(
-            "hermes wrapper not executed: pinned checkout missing "
-            f"(exit {completed.returncode}: {completed.stderr[-300:]})"
+    if os.environ.get("HERMES_ASK_BOOTSTRAP", "").strip() in {"1", "true", "yes"}:
+        dest = Path(env) if env else Path("/tmp/hermes-agent-pin")
+        script = worker_root() / "install_hermes.sh"
+        env_vars = {**os.environ, "HERMES_ASK_SRC": str(dest)}
+        completed = subprocess.run(
+            ["bash", str(script)], env=env_vars, capture_output=True, text=True, timeout=180
         )
-    return dest
+        if completed.returncode != 0 or not (dest / "run_agent.py").is_file():
+            pytest.skip(
+                "hermes wrapper not executed: bootstrap failed "
+                f"(exit {completed.returncode}: {completed.stderr[-300:]})"
+            )
+        return dest
+    pytest.skip(
+        "hermes wrapper not executed: pinned checkout missing. "
+        "Set HERMES_ASK_SRC to a HERMES_PIN checkout, or HERMES_ASK_BOOTSTRAP=1 "
+        "to run ask-worker/install_hermes.sh (git fetch + pip; not ordinary pytest)."
+    )
 
 
 def test_verify_hermes_pin_and_signatures():

@@ -99,7 +99,7 @@ in this repository's tests.
 
 | Control | What it does |
 |---|---|
-| Per-job profile | `ContainerWorker` writes a fresh temp directory (config + public SOUL + empty bundled-plugins). It never mounts an existing Hermes home and never deletes user `memories/` |
+| Per-job profile | Fresh temp directory (config + public SOUL + empty bundled-plugins); never mounts an existing Hermes home or deletes user `memories/`. `ContainerWorker.invocation()` keeps process, container name, and docker path on that call only, so timeout/abort never kills another principal's job. MCP and DPoP may share one worker; each `AskService` still has its own `max_concurrency` (default 2) |
 | Container launch | `ask-worker/launch.sh`: `docker run --read-only --cap-drop ALL --security-opt no-new-privileges --network "$ASK_NETWORK" --name …` plus tmpfs scratch, numeric `--user`. Bind-mounts: generated profile, job JSON, worker script, public style, inference file. All read-only |
 | Dockerfile | Clones pinned Hermes via `install_hermes.sh`, runs `verify_hermes.py` (import + sha256 + `AIAgent.chat -> str`). `ENTRYPOINT ["python3", "/opt/ask-worker/worker_main.py"]`; launch command is only `/job.json` |
 | Hermes `AIAgent` | `enabled_toolsets=[]`, `skip_memory=True`, `skip_context_files=True`, `load_soul_identity=False`, `max_iterations=1`. After init the worker asserts `agent.tools == []`, empty `valid_tool_names`, no memory provider/store |
@@ -135,8 +135,10 @@ on the current principal. Previous assistant prose is not replayed.
 
 Limits: body 16 KiB; query 2000 chars; envelope 10 items; output 8000 chars
 (capped while reading the worker pipe, and during generation via stream callback);
-worker timeout kills the process group and `docker rm -f` the named container
-(504); concurrency 2 (429). No fallback to personal Hermes.
+worker timeout kills **that invocation's** process group and `docker rm -f` its
+named container (504); concurrency 2 per `AskService` (429). Worker failures
+return a generic public error; stderr, credentials, paths, and the query never
+appear in MCP/HTTP responses. No fallback to personal Hermes.
 
 ## Operator launch
 
@@ -167,12 +169,17 @@ bash ask-worker/launch.sh
 Does: hidden-sentinel absence from the worker payload; host worker honestly
 reports a readable owner sentinel when the process can open it (no fake
 confinement helper); launch argv ENTRYPOINT+`/job.json`; timeout aborts without
-waiting on `ThreadPoolExecutor` shutdown and removes the named container; output
-cap during pipe read; citation parse/validation; thread bounds and same-thread
-reject; pinned Hermes `AIAgent` import with empty tools and `chat() -> str` over
-a fake `_interruptible_api_call` transport.
+waiting on `ThreadPoolExecutor` shutdown and removes **that job's** named
+container without targeting a peer job on a shared worker; output cap during
+pipe read; citation parse/validation; thread bounds and same-thread reject;
+worker stderr absent from public `IsolationUnavailable` / HTTP 503; pinned
+Hermes `AIAgent` import with empty tools and `chat() -> str` over a fake
+`_interruptible_api_call` transport **when a pin checkout is already present**.
 
 Does not: live paid/local model call; VPS deploy; MCP tool surface; durable
-thread SQLite; wiring into `create_app`; **container proof** when `docker` is
-missing (tests skip with that label). A Docker smoke using a slim image with the
-same ENTRYPOINT is attempted only when the daemon is present.
+thread SQLite; **container proof** when `docker` is missing (tests skip with that
+label). A Docker smoke using a slim image with the same ENTRYPOINT is attempted
+only when the daemon is present. Ordinary `pytest` does **not** git-fetch Hermes
+or `pip install` into the user environment. To run `tests/test_ask_hermes.py`
+against the pin: set `HERMES_ASK_SRC` to a checkout at the `HERMES_PIN` commit,
+or `HERMES_ASK_BOOTSTRAP=1` (runs `ask-worker/install_hermes.sh`; network + pip).

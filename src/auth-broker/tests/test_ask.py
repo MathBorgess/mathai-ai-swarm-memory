@@ -378,6 +378,28 @@ def test_same_thread_concurrent_update_is_rejected(tmp_path):
     store.close()
 
 
+def test_worker_exception_is_generic_without_query_or_secrets(tmp_path):
+    store, _ = _ingest(tmp_path)
+
+    class LeakyWorker:
+        def generate(self, payload):
+            raise IsolationUnavailable(
+                f"/root/.hermes OPENROUTER_API_KEY=sk-test query={payload['query']} {SENTINEL}"
+            )
+
+    service, _ = _service(tmp_path, store, worker=LeakyWorker())
+    with pytest.raises(IsolationUnavailable) as error:
+        service.ask(advisor(), "token-a")
+    text = str(error.value)
+    assert SENTINEL not in text
+    assert "token-a" not in text
+    assert ".hermes" not in text
+    assert "sk-test" not in text
+    assert "OPENROUTER" not in text
+    assert "/" not in text
+    store.close()
+
+
 def test_ask_package_does_not_import_hermes_adapter():
     import app.ask.isolation as isolation
     import app.ask.router as router

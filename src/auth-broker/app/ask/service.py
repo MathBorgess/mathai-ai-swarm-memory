@@ -124,10 +124,12 @@ class AskService:
     def _call_worker(self, payload: dict) -> dict:
         box: dict = {}
         done = threading.Event()
+        factory = getattr(self.worker, "invocation", None)
+        handle = factory() if callable(factory) else self.worker
 
         def run() -> None:
             try:
-                box["result"] = self.worker.generate(payload)
+                box["result"] = handle.generate(payload)
             except BaseException as error:
                 box["error"] = error
             finally:
@@ -135,7 +137,7 @@ class AskService:
 
         threading.Thread(target=run, daemon=True).start()
         if not done.wait(timeout=self.budget.timeout_seconds):
-            abort = getattr(self.worker, "abort", None)
+            abort = getattr(handle, "abort", None)
             if callable(abort):
                 abort()
             raise AskTimeout("Ask worker timed out")
@@ -144,6 +146,8 @@ class AskService:
             raise AskTimeout("Ask worker timed out") from error
         if isinstance(error, AskTimeout):
             raise error
+        if isinstance(error, IsolationUnavailable):
+            raise IsolationUnavailable("Ask worker failed closed") from None
         if error is not None:
             raise error
         result = box.get("result")

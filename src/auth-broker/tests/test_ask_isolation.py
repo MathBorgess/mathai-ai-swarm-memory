@@ -7,6 +7,7 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,7 +26,9 @@ from app.ask.isolation import (
     worker_root,
     write_job_profile,
 )
+from app.ask import AskBudget, AskService, AskTimeout, MemoryThreadStore
 from test_ask import SENTINEL, _inference, _ingest, _isolation, _service
+from test_ask_http import app_client
 from test_context_manifest import advisor
 
 
@@ -177,12 +180,13 @@ def test_launch_sh_fail_closed_without_inference(tmp_path):
     assert "ASK_INFERENCE" in completed.stderr
 
 
-def _write_fake_docker(path: Path, log: Path, mode: str = "ok") -> None:
+def _write_fake_docker(path: Path, log: Path, mode: str = "ok", stderr_text: str = "") -> None:
     path.write_text(
         "#!/usr/bin/env python3\n"
         "import json, sys, time\n"
         f"log = {str(log)!r}\n"
         f"mode = {mode!r}\n"
+        f"stderr_text = {stderr_text!r}\n"
         "open(log, 'a', encoding='utf-8').write(json.dumps(sys.argv[1:]) + '\\n')\n"
         "if sys.argv[1] == 'rm':\n"
         "    sys.exit(0)\n"
@@ -194,10 +198,63 @@ def _write_fake_docker(path: Path, log: Path, mode: str = "ok") -> None:
         "    sys.stdout.flush()\n"
         "    time.sleep(1)\n"
         "    sys.exit(0)\n"
+        "if mode == 'fail-stderr':\n"
+        "    sys.stderr.write(stderr_text)\n"
+        "    sys.stderr.flush()\n"
+        "    sys.exit(1)\n"
         "print(json.dumps({'text': 'isolated-stub', 'cited_handles': []}))\n",
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+
+def _write_gated_docker(path: Path, log: Path, gate: Path) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        f"log = {str(log)!r}\n"
+        f"gate = Path({str(gate)!r})\n"
+        "gate.mkdir(parents=True, exist_ok=True)\n"
+        "argv = sys.argv[1:]\n"
+        "open(log, 'a', encoding='utf-8').write(json.dumps(argv) + '\\n')\n"
+        "if argv and argv[0] == 'rm':\n"
+        "    (gate / ('removed-' + argv[-1])).write_text('1', encoding='utf-8')\n"
+        "    sys.exit(0)\n"
+        "name = argv[argv.index('--name') + 1] if '--name' in argv else 'unknown'\n"
+        "query = ''\n"
+        "for item in argv:\n"
+        "    if 'dst=/job.json' in item:\n"
+        "        for part in item.split(','):\n"
+        "            if part.startswith('src='):\n"
+        "                try:\n"
+        "                    query = json.loads(Path(part[4:]).read_text(encoding='utf-8')).get('query') or ''\n"
+        "                except Exception:\n"
+        "                    query = ''\n"
+        "(gate / ('started-' + name)).write_text(query, encoding='utf-8')\n"
+        "if query in ('token-a', 'slow-job'):\n"
+        "    time.sleep(60)\n"
+        "    sys.exit(0)\n"
+        "deadline = time.monotonic() + 10\n"
+        "while time.monotonic() < deadline:\n"
+        "    if (gate / 'release').exists():\n"
+        "        print(json.dumps({'text': 'peer-ok', 'cited_handles': []}))\n"
+        "        sys.exit(0)\n"
+        "    time.sleep(0.02)\n"
+        "sys.exit(2)\n",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+
+def _wait_started(gate: Path, count: int, timeout: float = 2.0) -> dict[str, str]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = {p.name[len("started-") :]: p.read_text(encoding="utf-8") for p in gate.glob("started-*")}
+        if len(rows) >= count:
+            return rows
+        time.sleep(0.02)
+    raise AssertionError(f"expected {count} started containers, got {list(gate.glob('started-*'))}")
 
 
 def test_container_worker_invokes_launch_with_isolation_flags(tmp_path):
@@ -386,3 +443,130 @@ def test_docker_smoke_stub_worker_without_provider(tmp_path):
     assert result["cited_handles"] == []
     inspection = result.get("inspection") or {}
     assert inspection.get("owner_sentinel_readable") is False
+
+
+def _job(query: str, timeout: int) -> dict:
+    return {
+        "query": query,
+        "prior_user_turns": [],
+        "envelope": [{"handle": "h1", "text": "visible", "source_revision": "rev-1"}],
+        "budget": {"max_output_chars": 100, "timeout_seconds": timeout},
+    }
+
+
+def test_worker_stderr_is_absent_from_public_error_and_http_response(tmp_path):
+    leak = (
+        f"{SENTINEL} /root/.hermes/config.yaml OPENROUTER_API_KEY=sk-leak "
+        "query=token-a path=/var/lib/auth-broker/ask-job.json"
+    )
+    log = tmp_path / "docker-argv.jsonl"
+    docker = tmp_path / "docker"
+    _write_fake_docker(docker, log, mode="fail-stderr", stderr_text=leak)
+    cfg = _isolation(tmp_path)
+    cfg.docker_bin = docker
+    with pytest.raises(IsolationUnavailable) as worker_error:
+        ContainerWorker(cfg).generate(_job("token-a", 2))
+    worker_text = str(worker_error.value)
+    assert SENTINEL not in worker_text
+    assert "sk-leak" not in worker_text
+    assert "token-a" not in worker_text
+    assert "/root/.hermes" not in worker_text
+    assert "OPENROUTER" not in worker_text
+    assert "ask-job.json" not in worker_text
+    store, _ = _ingest(tmp_path)
+    service = AskService(
+        store=store,
+        worker=ContainerWorker(cfg),
+        threads=MemoryThreadStore(),
+        isolation=cfg,
+        budget=AskBudget(timeout_seconds=2, max_concurrency=2),
+    )
+    with pytest.raises(IsolationUnavailable) as service_error:
+        service.ask(advisor(), "token-a")
+    service_text = str(service_error.value)
+    assert SENTINEL not in service_text
+    assert "sk-leak" not in service_text
+    assert "token-a" not in service_text
+    client, _ = app_client(
+        tmp_path,
+        store,
+        lambda request: advisor(),
+        worker=ContainerWorker(cfg),
+        isolation=cfg,
+    )
+    response = client.post("/v1/context/ask", json={"query": "token-a"})
+    assert response.status_code == 503
+    assert SENTINEL not in response.text
+    assert "sk-leak" not in response.text
+    assert "/root/.hermes" not in response.text
+    assert "OPENROUTER" not in response.text
+    store.close()
+
+
+def test_shared_worker_timeout_does_not_abort_other_entrypoint_job(tmp_path):
+    log = tmp_path / "docker-argv.jsonl"
+    docker = tmp_path / "docker"
+    gate = tmp_path / "gate"
+    gate.mkdir()
+    _write_gated_docker(docker, log, gate)
+    cfg = _isolation(tmp_path)
+    cfg.docker_bin = docker
+    worker = ContainerWorker(cfg)
+    store, _ = _ingest(tmp_path)
+    budget_slow = AskBudget(timeout_seconds=1, max_concurrency=2)
+    budget_fast = AskBudget(timeout_seconds=5, max_concurrency=2)
+    mcp = AskService(
+        store=store,
+        worker=worker,
+        threads=MemoryThreadStore(),
+        isolation=cfg,
+        budget=budget_slow,
+    )
+    dpop = AskService(
+        store=store,
+        worker=worker,
+        threads=MemoryThreadStore(),
+        isolation=cfg,
+        budget=budget_fast,
+    )
+    peer = advisor(principal_id="advisor-02", family_id="fam-other")
+    slow_box: dict = {}
+    fast_box: dict = {}
+
+    def run_mcp():
+        try:
+            mcp.ask(advisor(), "token-a")
+        except Exception as exc:
+            slow_box["error"] = exc
+
+    def run_dpop():
+        try:
+            fast_box["result"] = dpop.ask(peer, "token-c")
+        except Exception as exc:
+            fast_box["error"] = exc
+
+    slow_thread = threading.Thread(target=run_mcp)
+    slow_thread.start()
+    started = _wait_started(gate, 1)
+    fast_thread = threading.Thread(target=run_dpop)
+    fast_thread.start()
+    started = _wait_started(gate, 2)
+    slow_name = next(name for name, query in started.items() if query == "token-a")
+    fast_name = next(name for name, query in started.items() if query == "token-c")
+    slow_thread.join(timeout=3)
+    assert isinstance(slow_box.get("error"), AskTimeout)
+    assert (gate / f"removed-{slow_name}").exists()
+    assert not (gate / f"removed-{fast_name}").exists()
+    assert fast_thread.is_alive()
+    (gate / "release").write_text("1", encoding="utf-8")
+    fast_thread.join(timeout=3)
+    assert "error" not in fast_box
+    assert fast_box["result"]["items"][0]["text"] == "peer-ok"
+    assert (gate / f"removed-{fast_name}").exists()
+    assert mcp._slots._value == budget_slow.max_concurrency
+    assert dpop._slots._value == budget_fast.max_concurrency
+    follow = dpop.ask(peer, "token-c")
+    assert follow["items"][0]["text"] == "peer-ok"
+    assert mcp._slots._value == budget_slow.max_concurrency
+    assert dpop._slots._value == budget_fast.max_concurrency
+    store.close()
