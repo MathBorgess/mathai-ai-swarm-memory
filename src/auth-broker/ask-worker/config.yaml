@@ -1,0 +1,25 @@
+# Dedicated ask-worker Hermes profile. Not the owner ~/.hermes.
+# Tools off: enabled_toolsets [] is the allowlist (Hermes AIAgent treats [] as
+# no tools, including memory-provider and context-engine injection).
+# skip_memory + these flags are also passed to AIAgent in worker_main.py.
+
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+
+agent:
+  enabled_toolsets: []
+  disabled_toolsets:
+    - memory
+    - terminal
+    - web
+    - browser
+    - skills
+    - delegation
+    - code_execution
+    - mcp
+
+terminal:
+  home_mode: profile
+  backend: local
+  cwd: /isolated/workspace
