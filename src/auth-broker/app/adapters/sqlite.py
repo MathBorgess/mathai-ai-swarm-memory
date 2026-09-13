@@ -434,8 +434,9 @@ class SqlitePairingStore:
     def get_principal_by_github_subject(self, github_subject: str) -> Principal | None:
         """Active principal anchored to a numeric GitHub account id.
 
-        Cached login is ignored. When several rows share a subject, an unkeyed
-        principal is preferred so OAuth can resolve the allow-created identity.
+        Cached login is ignored. Prefer canonical github:{id} when present so
+        OAuth and Device Flow keep the same grants after DPoP key enrollment.
+        A single non-canonical row is selected explicitly; several fail closed.
         """
         if not isinstance(github_subject, str) or not github_subject.isdigit():
             raise ValueError("GitHub subject must be a numeric account id")
@@ -445,10 +446,13 @@ class SqlitePairingStore:
             (github_subject,),
         ).fetchall()
         principals = [self._principal_row(row) for row in rows]
+        canonical_id = f"github:{github_subject}"
         for principal in principals:
-            if principal.jwk is None:
+            if principal.id == canonical_id:
                 return principal
-        return principals[0] if principals else None
+        if len(principals) == 1:
+            return principals[0]
+        return None
 
     def active_principal(self, principal_id: str) -> Principal | None:
         principal = self.get_principal(principal_id)

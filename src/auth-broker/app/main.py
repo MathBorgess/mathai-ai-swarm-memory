@@ -12,6 +12,7 @@ from app.adapters.owner import CloudflareAccessVerifier
 from app.api import create_app
 from app.context import ContextStore
 from app.context import build_router as build_context_router
+from app.mcp_oauth.github import HttpGitHubAuthorizationCode
 from app.proposals import HttpProposalGitHub, ProposalRepository, ProposalStore
 from app.proposals import build_router as build_proposal_router
 
@@ -70,6 +71,7 @@ def build_app_from_environment() -> FastAPI:
         access_token_lifetime=access_token_lifetime,
         context_router_factory=optional_context_factory(),
         proposal_router_factory=optional_proposal_factory(),
+        mcp_github=optional_mcp_github(github_client_id, github_client_secret, public_url, token_signing_key, workspace_id),
     )
 
 
@@ -113,6 +115,21 @@ def optional_proposal_factory():
     github = HttpProposalGitHub(repository, values["AUTH_BROKER_PROPOSAL_GITHUB_TOKEN"])
     return lambda *, authorize: build_proposal_router(
         authorize=authorize, store=store, github=github, repository=repository,
+    )
+
+
+def optional_mcp_github(client_id: str, client_secret: str, public_url: str, signing_key: str | None, workspace_id: str | None):
+    """Authorization-code GitHub adapter for remote MCP OAuth.
+
+    Mounted only when swarm issuance is already configured (workspace + signing
+    key). Uses the same GitHub OAuth App as Device Flow; the web callback is
+    {public_url}/mcp/oauth/callback.
+    """
+    if not signing_key or not workspace_id:
+        return None
+    issuer = public_url.rstrip("/")
+    return HttpGitHubAuthorizationCode(
+        client_id, client_secret, callback_url=f"{issuer}/mcp/oauth/callback",
     )
 
 

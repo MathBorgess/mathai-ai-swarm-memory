@@ -465,20 +465,18 @@ def _scopes(raw: str | None) -> tuple[str, ...]:
 
 
 def _principal_for_subject(store: SqlitePairingStore, subject: str, requested: tuple[str, ...], now: datetime):
-    # ponytail: scan list_principals until identity agent adds get-by-github_subject
-    matches = []
-    for principal in store.list_principals():
-        if principal.github_subject != subject or principal.revoked_at is not None:
-            continue
-        granted = store.active_grant_scopes(principal.id, now)
-        try:
-            scopes = effective_scopes(requested, granted, principal.role)
-        except ScopeError:
-            continue
-        matches.append((principal, scopes))
-    if len(matches) != 1:
+    try:
+        principal = store.get_principal_by_github_subject(subject)
+    except ValueError:
         return None
-    return matches[0]
+    if principal is None:
+        return None
+    granted = store.active_grant_scopes(principal.id, now)
+    try:
+        scopes = effective_scopes(requested, granted, principal.role)
+    except ScopeError:
+        return None
+    return principal, scopes
 
 
 def _pkce_s256(verifier: str, challenge: str) -> bool:

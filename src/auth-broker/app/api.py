@@ -32,6 +32,8 @@ from app.adapters.hermes import HermesClient, HermesError
 from app.adapters.github import GitHubOAuth, GitHubOAuthError
 from app.adapters.owner import OwnerAssertionVerifier, OwnerAuthenticationError
 from app.adapters.sqlite import InvalidGrant, RefreshReuse, SqlitePairingStore
+from app.mcp_oauth import build_router as build_mcp_oauth_router
+from app.mcp_oauth.github import GitHubAuthorizationCode
 from app.agent_card import build_agent_card
 from app.auth.dpop import (
     DPOP_IAT_WINDOW,
@@ -131,7 +133,9 @@ def create_app(*, database_path: str | Path, audience: str,
                issuer: str | None = None,
                access_token_lifetime: timedelta = timedelta(minutes=5),
                context_router_factory: Callable | None = None,
-               proposal_router_factory: Callable | None = None) -> FastAPI:
+               proposal_router_factory: Callable | None = None,
+               mcp_github: GitHubAuthorizationCode | None = None,
+               mcp_registration_limit: int = 32) -> FastAPI:
     if not audience or not timedelta(0) < agent_lifetime <= timedelta(hours=1):
         raise ValueError("Audience and agent lifetime of at most one hour are required")
     if not timedelta(0) < access_token_lifetime <= timedelta(hours=1):
@@ -245,7 +249,23 @@ def create_app(*, database_path: str | Path, audience: str,
             "expires_in": int((access_exp - now).total_seconds()),
         }
 
+    mcp_oauth = None
+    if mcp_github is not None:
+        if token_signing_key is None or not workspace_id:
+            raise ValueError("MCP OAuth requires a signing key and workspace_id")
+        mcp_oauth = build_mcp_oauth_router(
+            database_path=database_path,
+            github=mcp_github,
+            signing_key=token_signing_key,
+            workspace_id=workspace_id,
+            clock=clock,
+            public_url=public_url,
+            registration_limit=mcp_registration_limit,
+        )
+        app.include_router(mcp_oauth.router)
     app.state.authorize = authorize
+    app.state.mcp_authorize = None if mcp_oauth is None else mcp_oauth.authorize
+    app.state.mcp_oauth = mcp_oauth
     app.state.context_router_factory = context_router_factory
     app.state.proposal_router_factory = proposal_router_factory
     context_router = context_router_factory(authorize=authorize) if context_installed else None
@@ -300,7 +320,9 @@ def create_app(*, database_path: str | Path, audience: str,
             return _dpop_error()
         with closing(_store()) as store:
             principal = store.active_principal(data["principal_id"])
-        if principal is None or verified.jkt != principal.jwk_thumbprint:
+        if principal is None or principal.jwk is None or not principal.jwk_thumbprint:
+            return _oauth_error("access_denied")
+        if verified.jkt != principal.jwk_thumbprint:
             return _oauth_error("access_denied")
         try:
             payload = github_oauth.start_device()
@@ -377,8 +399,8 @@ def create_app(*, database_path: str | Path, audience: str,
             principal = store.active_principal(tx.principal_id)
             if (
                 principal is None
-                or github_allowed_user_id is None
-                or subject != github_allowed_user_id
+                or principal.jwk is None
+                or not principal.jwk_thumbprint
                 or subject != principal.github_subject
                 or verified.jkt != principal.jwk_thumbprint
             ):

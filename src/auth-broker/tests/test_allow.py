@@ -316,7 +316,7 @@ def test_cli_allow_creates_unkeyed_principal_and_keyed_dpop_still_works(tmp_path
         assert "device_code" in start.json()
 
 
-def test_get_principal_by_github_subject_prefers_unkeyed_row(tmp_path):
+def test_get_principal_by_github_subject_prefers_canonical_after_key_enrollment(tmp_path):
     store = open_store(tmp_path / "broker.sqlite3")
     try:
         store.add_principal(
@@ -329,7 +329,43 @@ def test_get_principal_by_github_subject_prefers_unkeyed_row(tmp_path):
         found = store.get_principal_by_github_subject("4242")
         assert found.id == "github:4242"
         assert found.jwk is None
+        enrolled = store.enroll_principal_key("github:4242", es256_material()[2], NOW)
+        assert enrolled.jwk is not None
+        still = store.get_principal_by_github_subject("4242")
+        assert still.id == "github:4242"
+        assert still.jwk_thumbprint == enrolled.jwk_thumbprint
         with pytest.raises(ValueError):
             store.get_principal_by_github_subject("calegario")
+    finally:
+        store.close()
+
+
+def test_get_principal_by_github_subject_fails_closed_on_ambiguous_legacy_rows(tmp_path):
+    store = open_store(tmp_path / "broker.sqlite3")
+    try:
+        store.add_principal(
+            "advisor-01", github_subject="4242", jwk=es256_material()[2], role="advisor", now=NOW,
+        )
+        store.add_principal(
+            "advisor-02", github_subject="4242", jwk=es256_material()[2], role="advisor",
+            now=NOW + timedelta(seconds=1),
+        )
+        assert store.get_principal_by_github_subject("4242") is None
+        store.add_principal(
+            "github:4242", github_subject="4242", role="advisor", now=NOW + timedelta(seconds=2),
+        )
+        assert store.get_principal_by_github_subject("4242").id == "github:4242"
+    finally:
+        store.close()
+
+
+def test_get_principal_by_github_subject_selects_single_legacy_row(tmp_path):
+    store = open_store(tmp_path / "broker.sqlite3")
+    try:
+        store.add_principal(
+            "advisor-01", github_subject="4242", jwk=es256_material()[2], role="advisor", now=NOW,
+        )
+        found = store.get_principal_by_github_subject("4242")
+        assert found.id == "advisor-01"
     finally:
         store.close()

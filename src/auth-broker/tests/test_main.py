@@ -89,3 +89,23 @@ def test_without_cloudflare_access_starts_and_disables_legacy_pairing(configured
     main = importlib.import_module("app.main")
     with TestClient(main.app) as client:
         assert client.post("/v1/pairing-requests", json={"public_key": "ignored"}).status_code == 404
+        assert client.get("/.well-known/oauth-protected-resource").status_code == 404
+
+
+def test_mcp_oauth_mounted_when_workspace_and_signing_key_are_set(configured, monkeypatch, tmp_path):
+    from swarm_helpers import es256_material
+
+    _, pem, _, _ = es256_material()
+    key_path = tmp_path / "signing.pem"
+    key_path.write_bytes(pem)
+    monkeypatch.setenv("AUTH_BROKER_WORKSPACE_ID", "personal")
+    monkeypatch.setenv("AUTH_BROKER_JWT_SIGNING_KEY_PATH", str(key_path))
+    monkeypatch.setenv("AUTH_BROKER_PUBLIC_URL", "https://a2a.mathai.com.br")
+    main = importlib.import_module("app.main")
+    with TestClient(main.app) as client:
+        resource = client.get("/.well-known/oauth-protected-resource")
+        assert resource.status_code == 200
+        assert resource.json()["resource"] == "https://a2a.mathai.com.br/mcp"
+        nested = client.get("/.well-known/oauth-protected-resource/mcp")
+        assert nested.status_code == 200
+        assert nested.json()["resource"] == "https://a2a.mathai.com.br/mcp"

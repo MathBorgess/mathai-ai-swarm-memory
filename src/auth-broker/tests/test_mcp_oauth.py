@@ -244,19 +244,33 @@ def test_dcr_public_client_and_strict_redirects(tmp_path):
     ok = env.client.post(
         "/mcp/oauth/register",
         json={
-            "redirect_uris": ["http://127.0.0.1:9/cb", "http://[::1]/cb", "https://app.example/cb"],
+            "redirect_uris": [
+                "http://127.0.0.1:9/cb",
+                "http://localhost:8787/callback",
+                "http://[::1]:8787/callback",
+                "https://www.cursor.com/agents/mcp/oauth/callback",
+            ],
             "client_name": "Cursor",
             "token_endpoint_auth_method": "none",
         },
     )
     assert ok.status_code == 201
     assert "client_secret" not in ok.json()
-    bad = env.client.post(
-        "/mcp/oauth/register",
-        json={"redirect_uris": ["http://evil.example/cb"], "token_endpoint_auth_method": "none"},
-    )
-    assert bad.status_code == 400
-    assert bad.json()["error"] == "invalid_redirect_uri"
+    assert "http://localhost:8787/callback" in ok.json()["redirect_uris"]
+    for uri in (
+        "http://evil.example/cb",
+        "http://localhost.evil/cb",
+        "http://sub.localhost/cb",
+        "http://127.0.0.1.attacker/cb",
+        "http://0.0.0.0/cb",
+        "https://app.example/cb#frag",
+    ):
+        bad = env.client.post(
+            "/mcp/oauth/register",
+            json={"redirect_uris": [uri], "token_endpoint_auth_method": "none"},
+        )
+        assert bad.status_code == 400, uri
+        assert bad.json()["error"] == "invalid_redirect_uri", uri
 
 
 def test_two_github_identities_cannot_share_grants(tmp_path):
@@ -373,6 +387,33 @@ def test_http_github_uses_fixed_endpoints_and_numeric_id():
         ("POST", "https://github.com/login/oauth/access_token"),
         ("GET", "https://api.github.com/user"),
     ]
+
+
+def test_oauth_selects_canonical_grants_after_legacy_key_enrollment(tmp_path):
+    env = make_env(tmp_path)
+    add_principal(env, principal_id="advisor-01", subject="4242", scopes=(PROPOSE,))
+    store = SqlitePairingStore(env.path)
+    try:
+        store.add_principal(
+            "github:4242", github_subject="4242", role="advisor", now=env.clock[0],
+        )
+        store.set_grant("github:4242", READ, env.clock[0], env.clock[0] + timedelta(days=30))
+        store.enroll_principal_key("github:4242", env.jwk, env.clock[0])
+        assert store.get_principal_by_github_subject("4242").id == "github:4242"
+    finally:
+        store.close()
+    env.github.subject = "4242"
+    registered = register_client(env)
+    callback, verifier = complete_code_flow(env, client_id=registered["client_id"], scope=f"{READ} {PROPOSE}")
+    assert callback.status_code == 302, callback.text
+    location = urlparse(callback.headers["location"])
+    code = parse_qs(location.query)["code"][0]
+    issued = exchange(env, client_id=registered["client_id"], code=code, verifier=verifier)
+    assert issued.status_code == 200, issued.text
+    probe = env.client.get("/__probe", headers={"Authorization": f"Bearer {issued.json()['access_token']}"})
+    assert probe.status_code == 200
+    assert probe.json()["principal_id"] == "github:4242"
+    assert probe.json()["scopes"] == [READ]
 
 
 def test_refresh_rotates_and_issues_bearer_not_dpop(tmp_path):
