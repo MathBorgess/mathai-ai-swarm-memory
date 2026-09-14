@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mathai-swarm-reports"
+version = "0.1.0"
+description = "Deterministic daily-report metrics (RES, execution) for mathai swarm memory."
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+    "PyYAML>=6,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["swarm_reports*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
