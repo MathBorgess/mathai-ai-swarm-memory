@@ -70,14 +70,16 @@ def run_discovery(config: DiscoveryConfig) -> DiscoveryBatch:
             try:
                 result = source.discover(checkpoint)
             except SourceError as exc:
-                errors.append(DiscoveryError(source=name, message=str(exc), at=utc_now_iso()))
+                errors.append(DiscoveryError(source=name, message=f"source failed ({type(exc).__name__})", at=utc_now_iso()))
                 continue
             except Exception as exc:  # defensive: source bug must not corrupt other sources
-                errors.append(DiscoveryError(source=name, message=f"unexpected error: {exc}", at=utc_now_iso()))
+                errors.append(DiscoveryError(source=name, message=f"source failed ({type(exc).__name__})", at=utc_now_iso()))
                 continue
             kept = [item for item in result.items if item.id not in config.known_ledger_action_ids]
             items.extend(kept)
-            state.sources[name] = checkpoint.with_update(cursor=result.new_cursor, new_ids=result.new_ids)
+            state.sources[name] = checkpoint.with_update(cursor=result.new_cursor, new_ids=result.new_ids, paging=result.paging)
+            for item in kept:
+                state.items[item.id] = {"item": item.to_json(), "first_seen": state.items.get(item.id, {}).get("first_seen", utc_now_iso())}
         save_checkpoints(state_path, state)
         checkpoints_snapshot = {name: cp.to_json() for name, cp in state.sources.items() if name in sources}
 

@@ -88,10 +88,13 @@ class GithubSource:
 
     def __init__(self, config: GithubConfig) -> None:
         self.config = config
+        if not 1 <= config.max_pages <= 20 or not 1 <= config.per_page <= 100 or not 1 <= config.timeout_seconds <= 120:
+            raise SourceError("github: invalid pagination/timeout bounds")
 
     def discover(self, checkpoint: SourceCheckpoint) -> SourceResult:
         if not self.config.repos:
             raise SourceError("github: no repos configured")
+        self.paging = dict(checkpoint.paging)
         items: list[DiscoveryItem] = []
         new_ids: list[str] = []
         truncated = False
@@ -108,7 +111,7 @@ class GithubSource:
         new_cursor = max(cursors) if cursors else checkpoint.cursor
         if truncated:
             new_cursor = checkpoint.cursor
-        return SourceResult(items=items, new_cursor=new_cursor, new_ids=new_ids, truncated=truncated)
+        return SourceResult(items=items, new_cursor=new_cursor, new_ids=new_ids, truncated=truncated, paging=self.paging)
 
     def _call(self, path: str, params: dict[str, str]) -> tuple[dict[str, str], Any]:
         argv = [self.config.gh_bin, "api", "-i", "--method", "GET", path]
@@ -116,7 +119,7 @@ class GithubSource:
             argv.extend(["-f", f"{key}={value}"])
         result = self.config.runner(argv, self.config.timeout_seconds)
         if result.returncode != 0:
-            raise SourceError(f"github: gh api failed for {path}: {result.stderr.strip()[:300]}")
+            raise SourceError("github: gh api failed")
         return _parse_gh_i_output(result.stdout)
 
     def _discover_prs(
@@ -129,7 +132,10 @@ class GithubSource:
     ) -> tuple[str | None, bool]:
         max_observed: str | None = None
         truncated = False
-        for page in range(1, self.config.max_pages + 1):
+        key = repo + ":prs"
+        start = int(self.paging.get(key, {}).get("page", 1))
+        max_observed = self.paging.get(key, {}).get("high")
+        for page in range(start, start + self.config.max_pages):
             headers, body = self._call(
                 f"repos/{repo}/pulls",
                 {
@@ -148,7 +154,7 @@ class GithubSource:
                 number = pr.get("number")
                 if not updated_at or number is None:
                     continue
-                if checkpoint.cursor and updated_at <= checkpoint.cursor:
+                if checkpoint.cursor and updated_at < checkpoint.cursor:
                     continue
                 if max_observed is None or updated_at > max_observed:
                     max_observed = updated_at
@@ -157,6 +163,7 @@ class GithubSource:
                 else:
                     kind, ts, suffix = "pr_updated", updated_at, "updated"
                 item_id = f"github:{repo}:pr:{number}:{suffix}"
+                item_id += ":" + updated_at if not merged_at else ""
                 if item_id in seen_in_run:
                     continue
                 seen_in_run.add(item_id)
@@ -171,6 +178,7 @@ class GithubSource:
                         meta={
                             "repo": repo,
                             "number": number,
+                            "body": str(pr.get("body") or ""),
                             "author": (pr.get("user") or {}).get("login"),
                         },
                     )
@@ -178,8 +186,12 @@ class GithubSource:
                 new_ids.append(item_id)
             if not _has_next_page(headers) or len(body) < self.config.per_page:
                 break
-            if page == self.config.max_pages:
+            if page == start + self.config.max_pages - 1:
                 truncated = True
+        if truncated:
+            self.paging[key] = {"page": page + 1, "high": max_observed}
+        else:
+            self.paging.pop(key, None)
         return max_observed, truncated
 
     def _discover_commits(
@@ -195,7 +207,10 @@ class GithubSource:
         params: dict[str, str] = {"per_page": str(self.config.per_page)}
         if checkpoint.cursor:
             params["since"] = checkpoint.cursor
-        for page in range(1, self.config.max_pages + 1):
+        key = repo + ":commits"
+        start = int(self.paging.get(key, {}).get("page", 1))
+        max_observed = self.paging.get(key, {}).get("high")
+        for page in range(start, start + self.config.max_pages):
             page_params = dict(params, page=str(page))
             headers, body = self._call(f"repos/{repo}/commits", page_params)
             if not isinstance(body, list) or not body:
@@ -207,7 +222,7 @@ class GithubSource:
                 date = str(committer.get("date") or "")
                 if not sha or not date:
                     continue
-                if checkpoint.cursor and date <= checkpoint.cursor:
+                if checkpoint.cursor and date < checkpoint.cursor:
                     continue
                 if max_observed is None or date > max_observed:
                     max_observed = date
@@ -229,6 +244,10 @@ class GithubSource:
                 new_ids.append(item_id)
             if not _has_next_page(headers) or len(body) < self.config.per_page:
                 break
-            if page == self.config.max_pages:
+            if page == start + self.config.max_pages - 1:
                 truncated = True
+        if truncated:
+            self.paging[key] = {"page": page + 1, "high": max_observed}
+        else:
+            self.paging.pop(key, None)
         return max_observed, truncated

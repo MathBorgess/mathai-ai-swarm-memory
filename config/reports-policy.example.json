@@ -27,7 +27,7 @@
         "brand/**"
       ],
       "protected_paths": ["wiki/principles/**", "scripts/**", ".github/**"],
-      "weights_paths": ["brand/metrics/res-weights.yaml"],
+      "weights_paths": ["brand/metrics/res-weights.json"],
       "is_tau_intent": false
     },
     {
@@ -67,7 +67,7 @@
     "model_probe": { "cursor": true, "claude": false, "codex": false }
   },
   "handoff": {
-    "_comment": "argv receives JSON on stdin {provider, model, task_id, prompt}. Omit command to record handoffs without launching a subprocess.",
+    "_comment": "argv receives JSON on stdin {provider, model, task_id, prompt}. Without command or providers the task is deferred, never reported as launched.",
     "default_cost_pct": 5.0,
     "command": null
   },

@@ -56,34 +56,19 @@ from swarm_reports.wiki.freeze import apply_wiki_freeze
 from swarm_reports.wiki.publish import QueuedPublisher, WikiPublisher
 
 
-def _discovery_placeholder(config: ReportsConfig) -> str:
-    if not config.discovery:
-        return ""
-    try:
-        from swarm_reports.discovery.orchestrator import run_discovery
-
-        batch = run_discovery(
-            {**config.discovery, "state_dir": str(config.state_dir)},
-            known_ledger_action_ids=(),
-        )
-        if batch.errors and not batch.items:
-            return f"descoberta parcial: {len(batch.errors)} fonte(s) falharam"
-        if not batch.items:
-            return ""
-        lines = [f"{item.kind} {item.id}: {item.title}" for item in batch.items[:8]]
-        extra = len(batch.items) - len(lines)
-        suffix = f" (+{extra} mais)" if extra > 0 else ""
-        return "Fora do fluxo: " + "; ".join(lines) + suffix
-    except Exception as exc:  # noqa: BLE001 - discovery must not block the morning
-        return f"descoberta indisponível ({type(exc).__name__})"
-
 
 def _runtime_html_fields(config: ReportsConfig) -> tuple[list[tuple[str, str, str]], list[dict], str]:
     from swarm_reports.dispatch.runtime_store import load_runtime
 
     runtime = load_runtime(config.state_dir)
     deferred = [(d.task_id, d.title, d.reason) for d in runtime.deferred]
-    return deferred, list(runtime.digest_cards), runtime.dispatch_note
+    from swarm_reports.dispatch.runtime_store import cards_from_runtime
+    from swarm_reports.dispatch.digest import top_n_global
+    from dataclasses import asdict
+    grouped = {}
+    for card in cards_from_runtime(runtime):
+        grouped.setdefault(card.pr, []).append(card)
+    return deferred, [asdict(c) for c in top_n_global(grouped)], runtime.dispatch_note
 
 
 def _maybe_dispatch_handoffs(
@@ -95,24 +80,16 @@ def _maybe_dispatch_handoffs(
 ) -> None:
     if not dispatched or not plan.handoffs or config.dispatch_policy_path is None:
         return
-    from swarm_reports.dispatch.morning_dispatch import ProviderProbe, run_morning_handoff_dispatch
+    from swarm_reports.dispatch.morning_dispatch import run_morning_handoff_dispatch
     from swarm_reports.dispatch.policy_config import load_dispatch_policy
     from swarm_reports.dispatch.providers import SubprocessRunner
-
+    from swarm_reports.dispatch.probes import configured_probes
     policy = load_dispatch_policy(config.dispatch_policy_path)
-    # Quota probes are optional: unknown budget uses explicit estimates from policy.
-    probes = [
-        ProviderProbe(provider=name, remaining_pct=None, probed_at=None, note="not probed in CI")
-        for name in policy.routing.order
-    ]
-    run_morning_handoff_dispatch(
-        policy=policy,
-        state_dir=config.state_dir,
-        day=report_day.isoformat(),
-        handoffs=plan.handoffs,
-        probes=probes,
-        runner=SubprocessRunner(),
-    )
+    runner = SubprocessRunner()
+    run_morning_handoff_dispatch(policy=policy, state_dir=config.state_dir,
+        day=report_day.isoformat(), handoffs=plan.handoffs,
+        p0_ids={x["task_id"] for x in plan.p0_items},
+        probes=configured_probes(policy, runner), runner=runner)
 
 
 @dataclass(frozen=True)
@@ -335,8 +312,6 @@ def run_morning(
             plan, dispatched = _dispatch_planner(
                 config, report_day, plan_path, sources, progress, config.state_dir
             )
-            if config.discovery:
-                plan.discovery_placeholder = _discovery_placeholder(config) or plan.discovery_placeholder
             blocker = plan.freeze_blocker()
             if blocker:
                 # Refusing here is the point: freezing is irreversible for the day.
@@ -391,7 +366,7 @@ def run_morning(
             progress.enter(PHASE_FROZEN)
             save_progress(config.state_dir, progress)
 
-            _maybe_dispatch_handoffs(config, report_day, plan, dispatched=dispatched)
+            _maybe_dispatch_handoffs(config, report_day, plan, dispatched=not freeze_reused)
 
             render_plan = _with_real_ledger(
                 _plan_with_frozen_checklist(
@@ -402,8 +377,17 @@ def run_morning(
                 config.state_dir,
                 report_day,
             )
-            if config.discovery and not render_plan.discovery_placeholder:
-                render_plan.discovery_placeholder = _discovery_placeholder(config)
+            outside = []
+            if config.discovery:
+                from swarm_reports.discovery.runtime import refresh
+                try:
+                    outside, render_plan.discovery_placeholder = refresh(config, report_day)
+                except (ValueError, OSError):
+                    render_plan.discovery_placeholder = "Descoberta indisponível; verificar configuração."
+            seed = _evening_seed(render_plan, config.owner_id)
+            from swarm_reports.evening_schema import EveningUnplannedItem
+            seed.unplanned.extend(EveningUnplannedItem(task_id=x["id"], text=x["title"], done=False)
+                                  for x in outside)
             deferred, digest_cards, dispatch_note = _runtime_html_fields(config)
             html = render_morning_html(
                 MorningViewModel(
@@ -411,7 +395,8 @@ def run_morning(
                     owner_id=config.owner_id,
                     metrics=metrics,
                     plan=render_plan,
-                    evening_seed=_evening_seed(render_plan, config.owner_id),
+                    evening_seed=seed,
+                    outside_items=outside,
                     done_task_ids=sorted(validated_ids),
                     post_url=config.evening_post_url,
                     revision_url=config.evening_revision_url(report_day),

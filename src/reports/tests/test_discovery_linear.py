@@ -58,7 +58,7 @@ def test_token_adapter_never_fabricates_and_parses_real_shape(monkeypatch):
     config = LinearConfig(token_env="LINEAR_TOKEN_TEST", opener=fake_opener)
     result = LinearSource(config).discover(SourceCheckpoint())
     assert len(result.items) == 1
-    assert result.items[0].id == "linear:MAT-999"
+    assert result.items[0].id == "linear:MAT-999:2026-09-14T08:00:00.000Z"
     assert result.items[0].meta["identifier"] == "MAT-999"
     assert captured_headers["Authorization"] == "secret-token-value"
 
@@ -93,7 +93,7 @@ def test_command_adapter_reads_json_array_no_network(monkeypatch):
 
     config = LinearConfig(command=("linear-cli", "list", "--json"), command_runner=fake_runner)
     result = LinearSource(config).discover(SourceCheckpoint())
-    assert result.items[0].id == "linear:MAT-42"
+    assert result.items[0].id == "linear:MAT-42:2026-09-14T07:00:00Z"
 
 
 def test_command_adapter_rejects_non_array_json():

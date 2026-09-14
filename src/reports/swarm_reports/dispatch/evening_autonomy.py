@@ -14,6 +14,8 @@ from swarm_reports.dispatch.digest import (
     merge_cards,
     parse_declared_cards,
     top_n_global,
+    verify_locations,
+    review_diff_locally,
 )
 from swarm_reports.dispatch.gh_adapter import GhTransport, LocalReceipt, apply_decision
 from swarm_reports.dispatch.gh_cli import GhCliTransport
@@ -24,7 +26,7 @@ from swarm_reports.dispatch.merge_policy import (
     evaluate_merge,
 )
 from swarm_reports.dispatch.policy_config import DispatchPolicy
-from swarm_reports.dispatch.runtime_store import RuntimeState, save_runtime
+from swarm_reports.dispatch.runtime_store import load_runtime, save_runtime
 
 
 _PR_URL_RE = re.compile(r"https://github\.com/(?P<repo>[^/]+/[^/]+)/pull/(?P<num>\d+)")
@@ -61,11 +63,11 @@ def _files_from_gh(files_json: list) -> tuple[ChangedFile, ...]:
     for entry in files_json or []:
         if not isinstance(entry, dict):
             continue
-        path = str(entry.get("path") or "")
+        path = str(entry.get("filename") or entry.get("path") or "")
         status = str(entry.get("changeType") or entry.get("status") or "modified").lower()
         if status not in ("added", "modified", "removed", "renamed", "copied", "changed"):
             status = "modified"
-        prev = entry.get("previousFilename")
+        prev = entry.get("previous_filename") or entry.get("previousFilename")
         out.append(
             ChangedFile(
                 path=path,
@@ -96,6 +98,7 @@ def process_evening_pr(
     lint_ok: bool | None,
     gh: GhCliTransport | GhTransport,
     independent_reviewer=None,
+    lint_head_sha: str | None = None,
     now: datetime | None = None,
 ) -> EveningAutonomyResult:
     parsed = parse_pr_url(pr_url)
@@ -114,33 +117,8 @@ def process_evening_pr(
     body = str(view.get("body") or "")
     files = _files_from_gh(view.get("files") or [])
 
-    declared = parse_declared_cards(body)
-    diff = ""
-    if hasattr(gh, "pr_diff"):
-        try:
-            diff = gh.pr_diff(repo, number)  # type: ignore[attr-defined]
-        except RuntimeError:
-            diff = ""
-    independent = (
-        list(independent_cards(diff, independent_reviewer)) if diff and independent_reviewer else []
-    )
-    cards = merge_cards(declared, independent, max_per_pr=policy.digest.max_cards_per_pr)
-
-    runtime = RuntimeState()
-    pr_key = f"{repo}#{number}"
-    runtime.digest_cards = [
-        {
-            "kind": c.kind,
-            "location": c.location,
-            "question": c.question,
-            "why": c.why,
-            "source": c.source,
-            "pr": c.pr or pr_key,
-            "verified_line": c.verified_line,
-        }
-        for c in top_n_global({pr_key: cards}, n=policy.digest.top_n)
-    ]
-    save_runtime(state_dir, runtime)
+    cards = collect_pr_digest(policy, state_dir, repo, number, gh, view=view,
+                              independent_reviewer=independent_reviewer)
 
     pr = PullRequest(
         repo=repo,
@@ -148,8 +126,8 @@ def process_evening_pr(
         base_branch=str(view.get("baseRefName") or "main"),
         files=files,
         opened_on=date.today(),
-        lint=_lint_signal(head, lint_ok, now),
-        checks=None,
+        lint=_lint_signal(head, lint_ok if lint_head_sha == head else None, now),
+        checks=_checks_from_view(view, head, now),
     )
     decision = evaluate_merge(
         pr,
@@ -194,3 +172,31 @@ __all__ = [
     "parse_pr_url",
     "process_evening_pr",
 ]
+
+
+def _checks_from_view(view, head, now):
+    checks = view.get("requiredChecks") or []
+    if not checks or any(c.get("head_sha") != head for c in checks):
+        return None
+    success = all(c.get("conclusion") == "success" for c in checks)
+    return CheckSignal(state="success" if success else "failure", head_sha=head,
+        observed_at=now, required_contexts_met=success, detail="required GitHub checks at current head")
+
+
+def collect_pr_digest(policy, state_dir, repo, number, gh, *, view=None, independent_reviewer=None):
+    view = view if view is not None else gh.pr_view_json(repo, number)
+    body = str(view.get("body") or "")
+    diff = gh.pr_diff(repo, number)
+    reviewer = independent_reviewer or review_diff_locally
+    independent = independent_cards(diff, reviewer) if diff else []
+    cards = verify_locations(merge_cards(parse_declared_cards(body), independent,
+        max_per_pr=policy.digest.max_cards_per_pr), diff)
+    from dataclasses import asdict
+    from swarm_reports.dispatch.statefile import file_lock
+    pr_key = f"{repo}#{number}"
+    with file_lock(state_dir / "dispatch-runtime.lock"):
+        runtime = load_runtime(state_dir)
+        runtime.digest_cards = [c for c in runtime.digest_cards if c.get("pr") != pr_key] + [
+            {**asdict(c), "pr": pr_key} for c in cards]
+        save_runtime(state_dir, runtime)
+    return cards

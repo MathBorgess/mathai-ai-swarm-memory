@@ -255,3 +255,31 @@ __all__ = [
     "validate_card",
     "verify_locations",
 ]
+
+
+def review_diff_locally(diff_text):
+    """Independent deterministic diff review. No claim of semantic/model review.
+
+    Flags changed auth/contracts/dependencies and numeric ceilings, including PRs
+    with no declaration. Every location comes from an actual added line.
+    """
+    current, line_no, cards = None, 0, []
+    for line in diff_text.splitlines():
+        if line.startswith("+++ b/"):
+            current = line[6:]
+        elif line.startswith("@@"):
+            match = re.search(r"\+(\d+)", line)
+            line_no = int(match.group(1)) if match else 0
+        elif current and line.startswith("+") and not line.startswith("+++"):
+            text = line[1:].lower()
+            kind = ("auth_boundary" if any(x in text for x in ("token", "authorize", "permission", "jwt", "secret"))
+                    else "new_dependency" if current.endswith(("pyproject.toml", "package.json", "requirements.txt"))
+                    else "heuristic_with_ceiling" if re.search(r"\b\d{2,}\b", text)
+                    else "contract_change")
+            cards.append({"kind": kind, "location": f"{current}:{line_no}",
+                          "question": "Esta mudança preserva o contrato e os limites esperados?",
+                          "why": "Revisão determinística do diff; confirmar semântica e efeitos nesta linha."})
+            line_no += 1
+        elif current and line.startswith(" "):
+            line_no += 1
+    return cards[:12]

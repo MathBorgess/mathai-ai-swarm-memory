@@ -24,26 +24,29 @@ MAX_SEEN_IDS = 500
 class SourceCheckpoint:
     cursor: str | None = None
     seen_ids: list[str] = field(default_factory=list)
+    paging: dict = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
-        return {"cursor": self.cursor, "seen_ids": self.seen_ids}
+        return {"cursor": self.cursor, "seen_ids": self.seen_ids, "paging": self.paging}
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> SourceCheckpoint:
         seen = data.get("seen_ids") or []
         return cls(
             cursor=data.get("cursor"),
+            paging=dict(data.get("paging") or {}),
             seen_ids=[str(item) for item in seen if isinstance(item, str)],
         )
 
-    def with_update(self, *, cursor: str | None, new_ids: list[str]) -> SourceCheckpoint:
+    def with_update(self, *, cursor: str | None, new_ids: list[str], paging: dict | None = None) -> SourceCheckpoint:
         merged = self.seen_ids + [i for i in new_ids if i not in self.seen_ids]
         bounded = merged[-MAX_SEEN_IDS:]
-        return SourceCheckpoint(cursor=cursor, seen_ids=bounded)
+        return SourceCheckpoint(cursor=cursor, seen_ids=bounded, paging=paging or {})
 
 
 @dataclass
 class CheckpointState:
+    items: dict = field(default_factory=dict)
     version: int = STATE_VERSION
     sources: dict[str, SourceCheckpoint] = field(default_factory=dict)
 
@@ -53,6 +56,7 @@ class CheckpointState:
     def to_json(self) -> dict[str, Any]:
         return {
             "version": self.version,
+            "items": self.items,
             "sources": {name: cp.to_json() for name, cp in self.sources.items()},
         }
 
@@ -64,7 +68,7 @@ class CheckpointState:
             for name, value in sources_raw.items()
             if isinstance(value, dict)
         }
-        return cls(version=int(data.get("version", STATE_VERSION)), sources=sources)
+        return cls(version=int(data.get("version", STATE_VERSION)), sources=sources, items=dict(data.get("items") or {}))
 
 
 def default_checkpoint_path(state_dir: Path) -> Path:

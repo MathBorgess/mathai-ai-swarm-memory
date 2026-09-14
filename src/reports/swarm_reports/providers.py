@@ -51,30 +51,26 @@ def run_planner_provider(
         "wiki_dir": str(wiki_dir),
         **(input_payload or {}),
     }
+    from swarm_reports.dispatch.providers import SubprocessRunner, provider_argv, provider_json
+    native = config.kind != "json-stdio"
+    argv = provider_argv(config.kind, config.command, read_only=True) if native else list(config.command)
+    instruction = (
+        "Execute skills/daily-plan from the swarm reports mechanism. Read the wiki orientation, "
+        "Linear and Calendar using installed read-only tools. Unavailable sources must be marked "
+        "unavailable; do not invent IDs. Do not write, publish or merge. Return ONLY MorningPlan "
+        "JSON with day, checklist [{task_id,text,is_p0,first_planned}], sources "
+        "[{kind,pointer,status}], agenda, handoffs [{task_id,title,objective,copy_prompt}], "
+        "review_drafts, ledger, lesson and confirmed_empty. Use teach-me for study and post-voice "
+        "for proposed public drafts. Request: "
+    )
+    proc = SubprocessRunner(cwd=wiki_dir).run(
+        argv, stdin=(instruction if native else "") + json.dumps(payload), timeout=config.timeout_seconds)
+    if proc.timed_out or proc.returncode != 0:
+        raise RuntimeError("planner provider failed or timed out; diagnostic omitted")
     try:
-        proc = subprocess.run(
-            list(config.command),
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            timeout=config.timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"planner provider timed out after {config.timeout_seconds}s"
-        ) from exc
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"planner provider failed ({proc.returncode}): {_redact(proc.stderr)[:500]}"
-        )
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            "planner provider returned invalid JSON. This seam accepts only a "
-            "JSON-on-stdout adapter; wrapping a text-emitting provider CLI is F5 work."
-        ) from exc
+        data = provider_json(proc.stdout) if native else json.loads(proc.stdout)
+    except (ValueError, KeyError) as exc:
+        raise RuntimeError("planner provider returned invalid JSON") from exc
     if not isinstance(data, dict):
         raise RuntimeError("planner provider JSON root must be an object")
     plan = MorningPlan.from_json(data)

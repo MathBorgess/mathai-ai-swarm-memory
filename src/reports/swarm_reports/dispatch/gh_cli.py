@@ -47,7 +47,7 @@ class GhCliTransport:
             argv = merge_argv(request)
             code, _out, err = self._runner.run(argv, timeout=None)
             if code != 0:
-                raise RuntimeError(f"gh pr merge failed ({code}): {err[:400]}")
+                raise RuntimeError(f"gh pr merge failed ({code}); diagnostic omitted")
             return
         if request.op == "convert_to_draft":
             argv = [
@@ -61,7 +61,7 @@ class GhCliTransport:
             ]
             code, _out, err = self._runner.run(argv, timeout=None)
             if code != 0:
-                raise RuntimeError(f"gh pr draft conversion failed ({code}): {err[:400]}")
+                raise RuntimeError(f"gh pr draft conversion failed ({code}); diagnostic omitted")
             return
         if request.op == "comment":
             body = request.body or ""
@@ -77,7 +77,7 @@ class GhCliTransport:
             ]
             code, _out, err = self._runner.run(argv, timeout=None)
             if code != 0:
-                raise RuntimeError(f"gh pr comment failed ({code}): {err[:400]}")
+                raise RuntimeError(f"gh pr comment failed ({code}); diagnostic omitted")
             return
         raise ValueError(f"unsupported gh op {request.op!r}")
 
@@ -90,21 +90,48 @@ class GhCliTransport:
             "--repo",
             repo,
             "--json",
-            "number,title,body,headRefOid,baseRefOid,files,statusCheckRollup",
+            "number,title,body,headRefOid,baseRefOid,baseRefName,files,statusCheckRollup",
         ]
         code, out, err = self._runner.run(argv, timeout=None)
         if code != 0:
-            raise RuntimeError(f"gh pr view failed ({code}): {err[:400]}")
+            raise RuntimeError(f"gh pr view failed ({code}); diagnostic omitted")
         data = json.loads(out or "{}")
         if not isinstance(data, dict):
             raise RuntimeError("gh pr view returned non-object JSON")
+        # GraphQL `files` omits status and rename origin. REST carries both.
+        files = []
+        for page in range(1, 31):
+            code, out, _err = self._runner.run(["gh", "api", "--method", "GET",
+                f"repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}"], timeout=None)
+            if code:
+                raise RuntimeError("gh changed-file metadata unavailable")
+            rows = json.loads(out)
+            if not isinstance(rows, list):
+                raise RuntimeError("gh changed-file metadata invalid")
+            files.extend(rows)
+            if len(rows) < 100:
+                break
+        else:
+            raise RuntimeError("gh changed-file list exceeds bounded completeness limit")
+        data["files"] = files
+        # `--required` asks GitHub which contexts matter; empty/error is unknown.
+        code, out, _err = self._runner.run(["gh", "pr", "checks", str(pr_number), "--repo", repo,
+            "--required", "--json", "name,bucket"], timeout=None)
+        required = json.loads(out) if code == 0 else []
+        # The rollup must name the same head; view is checked again before merge.
+        data["requiredChecks"] = [{"head_sha": data["headRefOid"],
+            "conclusion": "success" if c.get("bucket") == "pass" else "failure"} for c in required]
+        code, latest, _err = self._runner.run(["gh", "pr", "view", str(pr_number), "--repo", repo,
+            "--json", "headRefOid"], timeout=None)
+        if code or json.loads(latest).get("headRefOid") != data["headRefOid"]:
+            data["requiredChecks"] = []
         return data
 
     def pr_diff(self, repo: str, pr_number: int) -> str:
         argv = ["gh", "pr", "diff", str(pr_number), "--repo", repo]
         code, out, err = self._runner.run(argv, timeout=None)
         if code != 0:
-            raise RuntimeError(f"gh pr diff failed ({code}): {err[:400]}")
+            raise RuntimeError(f"gh pr diff failed ({code}); diagnostic omitted")
         return out
 
 

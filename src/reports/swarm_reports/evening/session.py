@@ -780,14 +780,14 @@ def _publish(
     except Exception as exc:  # noqa: BLE001 - any transport error is a failed effect
         return STATUS_FAILED, None, f"{type(exc).__name__}: {exc}"[:500]
     if outcome.pull_request_url:
-        _maybe_apply_pr_autonomy(config, outcome.pull_request_url, lint_ok)
+        _maybe_apply_pr_autonomy(config, outcome.pull_request_url, lint_ok, night.commit_sha)
         return STATUS_COMPLETED, outcome.pull_request_url, outcome.detail
     if outcome.pushed:
         return STATUS_PENDING, None, outcome.detail
     return STATUS_PENDING, None, outcome.detail
 
 
-def _maybe_apply_pr_autonomy(config: ReportsConfig, pr_url: str, lint_ok: bool | None) -> None:
+def _maybe_apply_pr_autonomy(config: ReportsConfig, pr_url: str, lint_ok: bool | None, lint_head_sha: str | None = None) -> None:
     if config.dispatch_policy_path is None:
         return
     try:
@@ -801,6 +801,7 @@ def _maybe_apply_pr_autonomy(config: ReportsConfig, pr_url: str, lint_ok: bool |
             state_dir=config.state_dir,
             pr_url=pr_url,
             lint_ok=lint_ok,
+            lint_head_sha=lint_head_sha,
             gh=GhCliTransport(),
         )
     except Exception:  # noqa: BLE001 - autonomy is best-effort; ledger already records the PR

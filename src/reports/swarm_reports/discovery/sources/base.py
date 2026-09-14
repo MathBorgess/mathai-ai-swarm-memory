@@ -22,6 +22,7 @@ class SourceResult:
     new_cursor: str | None = None
     new_ids: list[str] = field(default_factory=list)
     truncated: bool = False
+    paging: dict = field(default_factory=dict)
 
 
 class DiscoverySource(Protocol):

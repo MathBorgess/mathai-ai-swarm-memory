@@ -55,7 +55,7 @@ def _default_opener(url: str, headers: dict[str, str], body: bytes, timeout: int
 def _default_command_runner(argv: list[str], timeout: int) -> str:
     completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     if completed.returncode != 0:
-        raise SourceError(f"linear: command adapter failed: {completed.stderr.strip()[:300]}")
+        raise SourceError("linear: command adapter failed")
     return completed.stdout
 
 
@@ -75,6 +75,8 @@ class LinearSource:
 
     def __init__(self, config: LinearConfig) -> None:
         self.config = config
+        if not 1 <= config.max_pages <= 20 or not 1 <= config.timeout_seconds <= 120:
+            raise SourceError("linear: invalid pagination/timeout bounds")
 
     def discover(self, checkpoint: SourceCheckpoint) -> SourceResult:
         if self.config.command:
@@ -100,8 +102,8 @@ class LinearSource:
             raise SourceError(f"linear: env var '{self.config.token_env}' is not set")
         items: list[DiscoveryItem] = []
         new_ids: list[str] = []
-        max_observed = checkpoint.cursor
-        after: str | None = None
+        max_observed = checkpoint.paging.get("high") or checkpoint.cursor
+        after: str | None = checkpoint.paging.get("after")
         truncated = False
         for page in range(1, self.config.max_pages + 1):
             variables = {"after": after, "since": checkpoint.cursor}
@@ -112,7 +114,7 @@ class LinearSource:
                 raise SourceError(f"linear: HTTP {response.status}")
             data = json.loads(response.body)
             if data.get("errors"):
-                raise SourceError(f"linear: API error: {data['errors']}")
+                raise SourceError("linear: API error")
             issues = ((data.get("data") or {}).get("issues")) or {}
             nodes = issues.get("nodes") or []
             page_items, page_ids, page_max = self._to_items(nodes, checkpoint)
@@ -123,11 +125,15 @@ class LinearSource:
             page_info = issues.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
                 break
-            after = page_info.get("endCursor")
+            next_after = page_info.get("endCursor")
+            if not next_after or next_after == after:
+                raise SourceError("linear: invalid pagination cursor")
+            after = next_after
             if page == self.config.max_pages:
                 truncated = True
         new_cursor = checkpoint.cursor if truncated else max_observed
-        return SourceResult(items=items, new_cursor=new_cursor, new_ids=new_ids, truncated=truncated)
+        return SourceResult(items=items, new_cursor=new_cursor, new_ids=new_ids, truncated=truncated,
+            paging={"after": after, "high": max_observed} if truncated else {})
 
     def _to_items(
         self, rows: list[dict[str, Any]], checkpoint: SourceCheckpoint
@@ -140,11 +146,13 @@ class LinearSource:
             updated_at = row.get("updatedAt")
             if not identifier or not updated_at:
                 continue
-            if checkpoint.cursor and str(updated_at) <= checkpoint.cursor:
+            if checkpoint.cursor and str(updated_at) < checkpoint.cursor:
                 continue
             if max_observed is None or str(updated_at) > max_observed:
                 max_observed = str(updated_at)
-            item_id = f"linear:{identifier}"
+            item_id = f"linear:{identifier}:{updated_at}"
+            if item_id in checkpoint.seen_ids or item_id in new_ids:
+                continue
             state = (row.get("state") or {}).get("name") if isinstance(row.get("state"), dict) else row.get("state")
             items.append(
                 DiscoveryItem(

@@ -52,6 +52,7 @@ class MorningViewModel:
     deferred_handoffs: list[tuple[str, str, str]] = field(default_factory=list)
     digest_cards: list[dict[str, str]] = field(default_factory=list)
     dispatch_note: str = ""
+    outside_items: list[dict] = field(default_factory=list)
 
 
 def escape_html(text: str) -> str:
@@ -273,7 +274,11 @@ def render_morning_html(model: MorningViewModel) -> str:
       }});
       const notes = byId("evening-notes");
       if (notes) notes.value = payload.notes || "";
-      (payload.unplanned || []).forEach(function(item) {{ addUnplanned(item); }});
+      byId("unplanned-rows").replaceChildren();
+      const outsideIds = new Set((payload.unplanned || []).map(function(x) {{ return x.task_id; }}));
+      (payload.unplanned || []).concat((SEED.unplanned || []).filter(function(x) {{ return !outsideIds.has(x.task_id); }}))
+        .forEach(function(item) {{ addUnplanned(item); }});
+      byId("post-rows").replaceChildren();
       (payload.posts || []).forEach(function(item) {{ addPost(item); }});
     }}
 
@@ -378,11 +383,16 @@ def render_morning_html(model: MorningViewModel) -> str:
 
     (async function init() {{
       const local = loadLocal();
+      currentRevision = local ? local.revision : 0;
+      applyPayload(local ? local.payload : SEED);
+      bindAutosave(document);
+      let editedDuringLoad = false;
+      document.addEventListener("input", function() {{ editedDuringLoad = true; }}, {{ once: true }});
       const remote = await loadRemote();
       let chosen = local;
       if (remote && (!local || remote.revision > local.revision)) chosen = remote;
       currentRevision = chosen ? chosen.revision : 0;
-      applyPayload(chosen ? chosen.payload : SEED);
+      if (!editedDuringLoad) applyPayload(chosen ? chosen.payload : SEED);
       bindAutosave(document);
 
       const addU = byId("add-unplanned");
@@ -390,6 +400,16 @@ def render_morning_html(model: MorningViewModel) -> str:
       const addP = byId("add-post");
       if (addP) addP.addEventListener("click", function() {{ addPost(null); }});
 
+      q("[data-question]").forEach(function(button) {{
+        button.addEventListener("click", function() {{
+          const prompt = button.dataset.question;
+          const notes = byId("evening-notes");
+          if (!notes.value.includes(prompt)) notes.value += (notes.value ? "\\n" : "") + prompt;
+          saveLocal(currentRevision, readForm());
+          if (navigator.clipboard) navigator.clipboard.writeText(prompt).catch(function() {{}});
+          status("Pergunta registrada nas notas. Envie a noite para sincronizar.");
+        }});
+      }});
       const copyBtn = byId("copy-prompt");
       if (copyBtn) {{
         copyBtn.addEventListener("click", function() {{
@@ -496,6 +516,11 @@ def _panel_hoje(model: MorningViewModel) -> str:
             )
     else:
         parts.append('<p class="muted">Nada registrado no ledger.</p>')
+    if model.outside_items:
+        parts.append('<div class="card"><h3>Desde a última rodada — fora do plano</h3>')
+        for item in model.outside_items:
+            parts.append(f'<p>{escape_html(item["kind"])}: {escape_html(item["title"])}</p>')
+        parts.append('</div>')
     if plan.discovery_placeholder:
         parts.append(f'<p class="muted">{escape_html(plan.discovery_placeholder)}</p>')
     if model.deferred_handoffs:
@@ -580,11 +605,13 @@ def _panel_revisar(model: MorningViewModel) -> str:
     if model.digest_cards:
         parts.append('<div class="card"><h3>Decisões (top 5)</h3>')
         for card in model.digest_cards[:5]:
+            question_prompt = f'Questionar {card.get("pr", "")} {card.get("location", "")}: {card.get("question", "")} Por que importa: {card.get("why", "")}'
             parts.append(
                 f'<p><strong>{escape_html(card.get("kind", ""))}</strong> '
                 f'{escape_html(card.get("location", ""))}<br />'
                 f'{escape_html(card.get("question", ""))}<br />'
-                f'<span class="muted">{escape_html(card.get("why", ""))}</span></p>'
+                f'<span class="muted">{escape_html(card.get("why", ""))}</span> '
+                f'<button type="button" data-question="{escape_html(question_prompt)}">Questionar</button></p>'
             )
         parts.append("</div>")
     else:

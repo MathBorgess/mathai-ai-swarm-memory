@@ -43,10 +43,10 @@ class PlannerProviderConfig:
         if timeout < 1 or timeout > 3600:
             raise ValueError("planner_provider.timeout_seconds out of range")
         kind = str(raw.get("kind") or PLANNER_KIND_JSON_STDIO)
-        if kind != PLANNER_KIND_JSON_STDIO:
+        if kind not in (PLANNER_KIND_JSON_STDIO, "claude", "codex", "cursor"):
             raise ValueError(
                 f"planner_provider.kind must be '{PLANNER_KIND_JSON_STDIO}'; "
-                "adapters for text-emitting provider CLIs land in F5"
+                "or claude, codex, cursor"
             )
         return cls(command=tuple(cmd), timeout_seconds=timeout, kind=kind)
 

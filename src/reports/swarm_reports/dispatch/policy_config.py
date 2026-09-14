@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ class QuotaPolicy:
     estimated_daily_budget_pct: dict[str, tuple[float, str]]
     treat_expired_reset_as_refilled: bool
     reset_declared_by: str
+    probes: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class DigestPolicy:
     max_cards_per_pr: int
     top_n: int
     allow_external_comments: bool
+    reviewer: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,9 @@ class HandoffPolicy:
     default_cost_pct: float
     #: argv prefix for every launch; stdin receives JSON `{provider, model, task_id, prompt}`.
     command: tuple[str, ...] | None
+    providers: dict = field(default_factory=dict)
+    repo_dir: str | None = None
+    timeout_seconds: float = 120
 
 
 @dataclass(frozen=True)
@@ -127,6 +132,7 @@ def load_dispatch_policy(path: Path) -> DispatchPolicy:
                 reset_raw.get("treat_expired_reset_as_refilled")
             ),
             reset_declared_by=str(reset_raw.get("declared_by") or ""),
+            probes=dict(quota_raw.get("probes") or {}),
         ),
         routing=RoutingPolicy(
             order=tuple(routing_raw.get("order") or ("cursor", "claude", "codex")),
@@ -136,10 +142,14 @@ def load_dispatch_policy(path: Path) -> DispatchPolicy:
             max_cards_per_pr=int(digest_raw.get("max_cards_per_pr") or 3),
             top_n=int(digest_raw.get("top_n") or 5),
             allow_external_comments=bool(digest_raw.get("allow_external_comments")),
+            reviewer=dict(digest_raw.get("reviewer") or {}),
         ),
         handoff=HandoffPolicy(
             default_cost_pct=float(handoff_raw.get("default_cost_pct") or 5.0),
             command=handoff_cmd,
+            providers=dict(handoff_raw.get("providers") or {}),
+            repo_dir=handoff_raw.get("repo_dir"),
+            timeout_seconds=float(handoff_raw.get("timeout_seconds", 120)),
         ),
     )
 

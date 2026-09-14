@@ -25,6 +25,8 @@ of spawning a real provider CLI.
 from __future__ import annotations
 
 import re
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from typing import Protocol, Sequence
@@ -65,23 +67,31 @@ class Runner(Protocol):
 class SubprocessRunner:
     """Real transport. argv only, never shell=True, no CLI output on unhandled error paths."""
 
+    def __init__(self, cwd=None):
+        self.cwd = cwd
+
     def run(self, argv: Sequence[str], *, stdin: str | None = None, timeout: float = 30.0) -> RunResult:
         if isinstance(argv, str):
             raise TypeError("argv must be a list, not a shell string")
         try:
-            proc = subprocess.run(
-                list(argv),
-                input=stdin,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                shell=False,
-            )
-            return RunResult(proc.returncode, redact(proc.stdout), redact(proc.stderr), timed_out=False)
-        except subprocess.TimeoutExpired:
-            return RunResult(returncode=-1, stdout="", stderr="timeout", timed_out=True)
-        except (OSError, ValueError) as exc:
-            return RunResult(returncode=-1, stdout="", stderr=redact(f"launch failed: {exc}"), timed_out=False)
+            proc = subprocess.Popen(list(argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, shell=False,
+                                    cwd=self.cwd, start_new_session=True)
+            try:
+                out, err = proc.communicate(stdin, timeout=timeout)
+                return RunResult(proc.returncode, redact(out[:2_000_000]), "" if not err else "provider diagnostic omitted", False)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                return RunResult(-1, "", "timeout", True)
+            finally:
+                # A CLI must not leave background writers after returning or timing out.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        except (OSError, ValueError):
+            return RunResult(-1, "", "launch failed", False)
 
 
 @dataclass(frozen=True)
@@ -170,3 +180,42 @@ __all__ = [
     "probe_model",
     "redact",
 ]
+
+
+def provider_argv(provider, command, *, model="default", read_only=False):
+    """Native CLI prefixes verified against installed --help; no shell or bypass flags."""
+    cli = KNOWN_CLIS[provider]
+    argv = list(command or (cli.binary,))
+    if provider == "codex":
+        argv += ["exec", "--json", "--ephemeral", "--sandbox", "read-only" if read_only else "workspace-write"]
+    else:
+        argv += ["--print", "--output-format", "json"]
+        if read_only:
+            argv += ["--permission-mode", "plan"] if provider == "claude" else ["--mode", "plan"]
+    return argv + model_argv(cli, model)
+
+
+def provider_json(stdout):
+    """Read native Claude/Cursor result envelopes or Codex JSONL agent_message."""
+    import json
+    try:
+        value = json.loads(stdout)
+    except json.JSONDecodeError:
+        events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        texts = [e["item"]["text"] for e in events
+                 if e.get("type") == "item.completed" and e.get("item", {}).get("type") == "agent_message"]
+        if not texts:
+            raise ValueError("provider returned no final agent message")
+        value = texts[-1]
+    if isinstance(value, dict) and value.get("is_error"):
+        raise ValueError("provider returned an error")
+    if isinstance(value, dict) and ("result" in value or "structured_output" in value):
+        value = value.get("structured_output") or value["result"]
+    if isinstance(value, str):
+        value = value.strip()
+        if value.startswith("```json") and value.endswith("```"):
+            value = value[7:-3].strip()
+        value = json.loads(value)
+    if not isinstance(value, (dict, list)):
+        raise ValueError("provider result must be structured JSON")
+    return value
