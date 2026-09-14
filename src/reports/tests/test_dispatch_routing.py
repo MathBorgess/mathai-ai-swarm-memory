@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
 from swarm_reports.dispatch.routing import ProviderState, classify, eligible, route
 
 
@@ -74,3 +75,40 @@ def test_user_override_wins_even_if_low():
 def test_route_returns_empty_when_everything_empty():
     states = [ProviderState("cursor", 0.0), ProviderState("claude", 0.0), ProviderState("codex", 0.0)]
     assert route(["t1"], states, parent="claude") == {}
+
+
+# --- adversarial: inputs a probe or a config can actually produce ------------
+
+
+def test_a_provider_barely_above_zero_does_not_divide_by_zero():
+    """weight = remaining%, and a 0.0000001% reading must not crash the split."""
+    states = [ProviderState("claude", 1e-9), ProviderState("codex", 50.0)]
+    assignment = route(["t1", "t2"], states, parent="cursor")
+    assert set(assignment.values()) <= {"claude", "codex"}
+
+
+@pytest.mark.parametrize("pct", [-1.0, 101.0, float("nan"), float("inf"), "80", True])
+def test_impossible_remaining_pct_is_rejected_at_construction(pct):
+    with pytest.raises(ValueError):
+        ProviderState("claude", pct)
+
+
+def test_empty_provider_name_is_rejected():
+    with pytest.raises(ValueError):
+        ProviderState("  ", 50.0)
+
+
+def test_override_naming_an_unknown_provider_is_an_error_not_a_silent_launch():
+    states = [ProviderState("claude", 90.0)]
+    with pytest.raises(ValueError):
+        route(["t1"], states, parent="claude", overrides={"t1": "gemini"})
+
+
+def test_stale_probe_keeps_a_provider_eligible_as_unknown_not_as_full():
+    """A 9h-old 90% reading must weigh as 'unknown' (50), not as 90."""
+    now = datetime(2026, 9, 14, 12, 0)
+    stale = classify("claude", 90.0, probed_at=now - timedelta(hours=9), now=now)
+    fresh = classify("codex", 60.0, probed_at=now, now=now)
+    assignment = route(["t1", "t2", "t3", "t4", "t5"], [stale, fresh], parent="cursor")
+    counts = {p: list(assignment.values()).count(p) for p in ("claude", "codex")}
+    assert counts["codex"] > counts["claude"]  # 60 outweighs the unknown-weight 50

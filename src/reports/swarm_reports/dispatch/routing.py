@@ -6,6 +6,7 @@ dispatcher and the interactive handoff skill agree on the same rules.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, Sequence
@@ -18,12 +19,26 @@ UNKNOWN_WEIGHT = 50.0
 DEFAULT_ORDER: tuple[str, ...] = ("cursor", "claude", "codex")
 
 
+MIN_WEIGHT = 1e-6
+
+
 @dataclass(frozen=True)
 class ProviderState:
     provider: str
     remaining_pct: float | None
     probed_at: datetime | None = None
     stale: bool = False  # set by classify(); distinguishes "old probe" from "probe failed"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.provider, str) or not self.provider.strip():
+            raise ValueError("provider must be a non-empty string")
+        pct = self.remaining_pct
+        if pct is None:
+            return
+        if isinstance(pct, bool) or not isinstance(pct, (int, float)) or not math.isfinite(float(pct)):
+            raise ValueError(f"remaining_pct must be a finite number or None, got {pct!r}")
+        if not 0.0 <= float(pct) <= 100.0:
+            raise ValueError(f"remaining_pct out of range 0..100: {pct!r}")
 
 
 def classify(
@@ -72,7 +87,9 @@ def eligible(
 def _weight(state: ProviderState, low_threshold: float) -> float:
     if state.remaining_pct is None:
         return UNKNOWN_WEIGHT
-    return state.remaining_pct
+    # a weight of exactly 0 would divide by zero in the round-robin; `eligible`
+    # already excludes empty providers, so this is a floor, not a policy
+    return max(float(state.remaining_pct), MIN_WEIGHT)
 
 
 def _rotation_order(parent: str, order: Sequence[str]) -> list[str]:
@@ -93,6 +110,10 @@ def route(
 ) -> dict[str, str]:
     """Assign each task_id to a provider name. Empty result if nothing is eligible."""
     overrides = overrides or {}
+    seen_providers = {s.provider for s in states}
+    for task_id, forced in (overrides or {}).items():
+        if forced not in seen_providers:
+            raise ValueError(f"override for {task_id!r} names unknown provider {forced!r}")
     elig = eligible(states, low_threshold=low_threshold)
     if not elig:
         return {}
