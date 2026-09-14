@@ -1,19 +1,21 @@
 import json
-import subprocess
-from datetime import date
 from pathlib import Path
 
+import pytest
+
 from swarm_reports.cli import main as reports_cli_main
+
+DAY = "2026-09-14"
 
 
 def _wiki_layout(tmp_path: Path) -> Path:
     wiki = tmp_path / "wiki"
     (wiki / "daily").mkdir(parents=True)
-    (wiki / "daily" / "2026-09-14.md").write_text("# 2026-09-14\n\n## Hoje\n\n", encoding="utf-8")
+    (wiki / "daily" / f"{DAY}.md").write_text(f"# {DAY}\n\n## Hoje\n\n", encoding="utf-8")
     return wiki
 
 
-def test_cli_morning_with_plan(tmp_path):
+def write_config(tmp_path: Path, **extra) -> Path:
     wiki = _wiki_layout(tmp_path)
     weights = Path(__file__).parent / "fixtures" / "metrics" / "res-weights.json"
     config = {
@@ -22,29 +24,66 @@ def test_cli_morning_with_plan(tmp_path):
         "weights_path": str(weights),
         "output_dir": str(tmp_path / "out"),
         "owner_id": "owner",
+        **extra,
     }
-    config_path = tmp_path / "reports.json"
-    config_path.write_text(json.dumps(config), encoding="utf-8")
+    path = tmp_path / "reports.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    return path
+
+
+def write_plan(tmp_path: Path) -> Path:
     plan = {
-        "day": "2026-09-14",
-        "p0_items": [],
-        "handoffs": [],
+        "day": DAY,
+        "checklist": [{"task_id": "MAT-1", "text": "item", "is_p0": True}],
         "sources": [{"kind": "linear", "pointer": "", "status": "unavailable"}],
     }
-    plan_path = tmp_path / "plan.json"
-    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan), encoding="utf-8")
+    return path
+
+
+def test_cli_morning_with_plan(tmp_path):
+    config_path = write_config(tmp_path)
+    plan_path = write_plan(tmp_path)
     code = reports_cli_main(
         [
-            "--config",
-            str(config_path),
-            "report",
-            "morning",
-            "--date",
-            "2026-09-14",
-            "--plan",
-            str(plan_path),
+            "--config", str(config_path),
+            "report", "morning",
+            "--date", DAY,
+            "--plan", str(plan_path),
             "--replay",
         ]
     )
     assert code == 0
-    assert (tmp_path / "out" / "2026-09-14.html").is_file()
+    assert (tmp_path / "out" / f"{DAY}.html").is_file()
+
+
+def test_cli_accepts_config_after_the_subcommand(tmp_path):
+    """`mathai-swarm report morning --config ...` is the documented invocation."""
+    config_path = write_config(tmp_path)
+    plan_path = write_plan(tmp_path)
+    code = reports_cli_main(
+        [
+            "report", "morning",
+            "--config", str(config_path),
+            "--date", DAY,
+            "--plan", str(plan_path),
+            "--replay",
+        ]
+    )
+    assert code == 0
+    assert (tmp_path / "out" / f"{DAY}.html").is_file()
+
+
+def test_cli_rejects_relative_plan(tmp_path):
+    config_path = write_config(tmp_path)
+    code = reports_cli_main(
+        ["report", "morning", "--config", str(config_path), "--plan", "plan.json"]
+    )
+    assert code == 2
+
+
+@pytest.mark.parametrize("argv", [["report", "evening"], ["report", "evening", "--date", DAY]])
+def test_cli_evening_requires_input(tmp_path, argv):
+    config_path = write_config(tmp_path)
+    assert reports_cli_main([*argv, "--config", str(config_path)]) == 2

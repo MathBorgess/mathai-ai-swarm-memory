@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -62,7 +63,16 @@ class DayState:
     frozen_at_snapshot: str | None = None
     evening_validated: bool = False
     evening_absent: bool = False
+    #: Task ids the owner validated as done. Without these, completion for a past day
+    #: can only ever be `None`, so the "yesterday" tile would never show a number.
+    evening_validated_ids: list[str] = field(default_factory=list)
+    #: Unplanned work reported in the evening; never enters the denominator.
+    evening_unplanned_ids: list[str] = field(default_factory=list)
+    evening_revision: int | None = None
     carryover: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def frozen_ids(self) -> list[str]:
+        return [item.task_id for item in self.frozen_checklist]
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -72,6 +82,9 @@ class DayState:
             "frozen_at_snapshot": self.frozen_at_snapshot,
             "evening_validated": self.evening_validated,
             "evening_absent": self.evening_absent,
+            "evening_validated_ids": list(self.evening_validated_ids),
+            "evening_unplanned_ids": list(self.evening_unplanned_ids),
+            "evening_revision": self.evening_revision,
             "carryover": self.carryover,
         }
 
@@ -86,6 +99,7 @@ class DayState:
         morning_freeze_applied = bool(data.get("morning_freeze_applied"))
         if not morning_freeze_applied and frozen:
             morning_freeze_applied = True
+        revision = data.get("evening_revision")
         return cls(
             frozen_checklist=frozen,
             morning_freeze_applied=morning_freeze_applied,
@@ -93,6 +107,9 @@ class DayState:
             frozen_at_snapshot=data.get("frozen_at_snapshot"),
             evening_validated=bool(data.get("evening_validated")),
             evening_absent=bool(data.get("evening_absent")),
+            evening_validated_ids=[str(x) for x in (data.get("evening_validated_ids") or [])],
+            evening_unplanned_ids=[str(x) for x in (data.get("evening_unplanned_ids") or [])],
+            evening_revision=int(revision) if revision is not None else None,
             carryover=dict(data.get("carryover") or {}),
         )
 
@@ -201,11 +218,53 @@ def apply_morning_freeze(
     return True
 
 
-def mark_evening_validated(state: ReportsState, day: date, *, absent: bool = False) -> None:
+def mark_evening_validated(
+    state: ReportsState,
+    day: date,
+    *,
+    absent: bool = False,
+    validated_ids: Iterable[str] | None = None,
+    unplanned_ids: Iterable[str] | None = None,
+    revision: int | None = None,
+) -> None:
     bucket = state.get_day(day)
     if absent:
         bucket.evening_absent = True
         bucket.evening_validated = False
+        bucket.evening_validated_ids = []
         return
     bucket.evening_validated = True
     bucket.evening_absent = False
+    if validated_ids is not None:
+        bucket.evening_validated_ids = sorted({str(x) for x in validated_ids})
+    if unplanned_ids is not None:
+        bucket.evening_unplanned_ids = sorted({str(x) for x in unplanned_ids})
+    if revision is not None:
+        bucket.evening_revision = int(revision)
+
+
+def carryover_first_planned(state: ReportsState, task_id: str, default: date) -> date:
+    """Earliest recorded `first_planned` for a task, so drift survives day rollover."""
+    earliest = default
+    for bucket in state.days.values():
+        entry = bucket.carryover.get(task_id)
+        if not isinstance(entry, dict):
+            continue
+        raw = entry.get("first_planned")
+        if not raw:
+            continue
+        try:
+            candidate = date.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if candidate < earliest:
+            earliest = candidate
+    return earliest
+
+
+def validated_task_ids(state: ReportsState) -> set[str]:
+    """Every task the owner has ever validated as done."""
+    done: set[str] = set()
+    for bucket in state.days.values():
+        done.update(bucket.evening_validated_ids)
+    return done

@@ -63,11 +63,27 @@ body {
 }
 .card h3 { margin: 0 0 0.35rem; font-size: 0.95rem; }
 .muted { color: #666; font-size: 0.8rem; }
-textarea, input[type="text"], input[type="number"] {
+.card pre { white-space: pre-wrap; word-break: break-word; font-size: 0.75rem; }
+textarea, input[type="text"], input[type="number"], select {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
 }
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid #eee;
+}
+.row:first-child { border-top: 0; }
+.row label { font-size: 0.85rem; }
+.signals {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.25rem;
+}
+.sig { font-size: 0.75rem; color: #555; }
 .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
 button {
   font: inherit;

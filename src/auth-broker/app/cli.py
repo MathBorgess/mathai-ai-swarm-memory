@@ -76,13 +76,6 @@ def _parser() -> argparse.ArgumentParser:
     token_revoke = token_sub.add_parser("revoke", help="Revoke a refresh family immediately")
     token_revoke.add_argument("--family", required=True)
 
-    report = sub.add_parser(
-        "report",
-        help="Daily reports (requires mathai-swarm-reports in the same venv)",
-    )
-    report_sub = report.add_subparsers(dest="report_command", required=True)
-    report_sub.add_parser("morning", help="Generate morning HTML (delegates to swarm_reports)")
-    report_sub.add_parser("evening", help="Evening report (F4; not implemented in F2)")
     return parser
 
 
@@ -101,29 +94,19 @@ def _delegate_report(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None, *, github_transport=None, now: datetime | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # `report` is handed to the reports CLI verbatim. Declaring the flags twice here
+    # only produced "unrecognized arguments" for the documented
+    # `mathai-swarm report morning --config /abs/reports.json`, because the broker
+    # parser owns neither `--config` nor the report subcommand's own options.
+    if raw and raw[0] == "report":
+        return _delegate_report(raw)
+
     parser = _parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0)
-    if args.command == "report":
-        if args.report_command == "evening":
-            print("error: report evening is not available until F4", file=sys.stderr)
-            return 2
-        tail = ["report", "morning"]
-        # Forward unknown flags from argv after 'morning'
-        if argv is None:
-            import sys as _sys
-
-            raw = _sys.argv[1:]
-        else:
-            raw = list(argv)
-        try:
-            idx = raw.index("morning")
-            tail.extend(raw[idx + 1 :])
-        except ValueError:
-            pass
-        return _delegate_report(tail)
     if not args.store:
         print("error: --store is required for broker admin commands", file=sys.stderr)
         return 2

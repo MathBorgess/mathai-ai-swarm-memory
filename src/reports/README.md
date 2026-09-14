@@ -15,15 +15,19 @@ Deterministic metrics (F1) and morning HTML + wiki freeze runtime (F2).
 ## Wiki markers (additive)
 
 ```markdown
-<!-- swarm:frozen-checklist-begin snapshot=2026-09-14T08:00:00-03:00 commit=<git-sha> -->
-- [ ] item
+<!-- swarm:frozen-checklist-begin snapshot=2026-09-14T08:00:00-03:00 -->
 <!-- swarm:task-meta id=MAT-193 first_planned=2026-09-14 frozen=true -->
+- [ ] item
 <!-- swarm:frozen-checklist-end -->
 <!-- swarm:added-after-freeze -->
 - [ ] unplanned item
 <!-- swarm:p0 --> or `P0` in text
 <!-- swarm:class procrastinação|devaneio|oportunidade -->
 ```
+
+The marker carries the snapshot id only. The freeze commit sha lives in
+`reports-state.json` (`frozen_at_commit`): a marker cannot name the commit that contains
+it without an amend, and an amend makes the recorded sha unreachable.
 
 Daily YAML flags: `swarm_evening_validated`, `swarm_evening_absent`.
 
@@ -53,10 +57,15 @@ cd src/reports && python -m pip install -e '.[dev]' && python -m pytest -q
 
 | Module | Role |
 |--------|------|
-| `swarm_reports.morning` | Freeze + metrics + HTML |
-| `swarm_reports.cli` | `mathai-swarm-reports report morning` |
-| `swarm_reports.evening_schema` | `EveningPayload` for F3/F4 |
-| `swarm_reports.wiki.freeze` | Isolated worktree checklist freeze |
+| `swarm_reports.morning` | Dispatch-once / refresh-every-run orchestration |
+| `swarm_reports.plan` | `MorningPlan`: full checklist, P0 subset, freeze gate |
+| `swarm_reports.sources` | Linear/Calendar intake and P0 eligibility (priority **or** deadline) |
+| `swarm_reports.tiles` | The metric band, computed from persisted state |
+| `swarm_reports.storage` | Day lease + `MorningProgress` phase checkpoints |
+| `swarm_reports.wiki.freeze` | Per-day isolated worktree freeze |
+| `swarm_reports.wiki.publish` | Push + PR seam (`QueuedPublisher`, `GitPushPublisher`) |
+| `swarm_reports.evening_schema` | Canonical `EveningPayload` for F3/F4 |
+| `swarm_reports.cli` | `report morning` / `report evening --input` |
 
-`mathai-swarm report morning` delegates from `src/auth-broker` when both packages share a venv.
-See `docs/operations/daily-reports-f2.md`.
+`mathai-swarm report ...` forwards verbatim to this CLI when both packages share a venv;
+`--config` parses before or after the subcommand. See `docs/operations/daily-reports-f2.md`.
