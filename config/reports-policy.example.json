@@ -1,0 +1,31 @@
+{
+  "_comment": "Example only. No real credentials here. Copy to reports-policy.json outside Git and point state_dir/config_path at it.",
+  "repos": [
+    {
+      "repo": "MathBorgess/mathai-ai-swarm-memory",
+      "allowed_paths": ["src/reports/**", "skills/daily-plan/**", "skills/daily-review/**"],
+      "protected_paths": ["src/auth-broker/**", "src/hermes-identity/**"],
+      "is_tau_intent": false
+    },
+    {
+      "repo": "MathBorgess/mathai-wiki",
+      "allowed_paths": ["wiki/**", "daily/**", "brand/**"],
+      "protected_paths": ["wiki/principles/**"],
+      "is_tau_intent": false
+    },
+    {
+      "repo": "MathBorgess/tau-intent",
+      "allowed_paths": ["**"],
+      "protected_paths": [],
+      "is_tau_intent": true
+    }
+  ],
+  "quota": {
+    "low_threshold_pct": 20.0,
+    "unknown_daily_budget_pct": 10.0,
+    "stale_after_hours": 6
+  },
+  "routing": {
+    "order": ["cursor", "claude", "codex"]
+  }
+}
