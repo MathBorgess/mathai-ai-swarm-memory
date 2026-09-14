@@ -49,12 +49,13 @@ def write_config(tmp_path: Path, **server) -> Path:
 def test_evening_input_saves_a_revision(tmp_path, capsys):
     config = write_config(tmp_path)
     payload = write_payload(tmp_path / "evening.json")
+    args = ["report", "evening", "--config", str(config), "--input", str(payload), "--submit-only"]
 
-    assert main(["report", "evening", "--config", str(config), "--input", str(payload)]) == 0
+    assert main(args) == 0
     out = capsys.readouterr()
     assert "revision 1 (new)" in out.out
 
-    assert main(["report", "evening", "--config", str(config), "--input", str(payload)]) == 0
+    assert main(args) == 0
     assert "revision 1 (unchanged)" in capsys.readouterr().out
     assert RevisionStore(tmp_path / "state").latest(DAY).revision == 1
 
@@ -69,7 +70,20 @@ def test_evening_input_and_post_agree_byte_for_byte(tmp_path, reports_config):
 
     config = write_config(tmp_path)
     payload = write_payload(tmp_path / "evening.json", notes="parity")
-    assert main(["report", "evening", "--config", str(config), "--input", str(payload)]) == 0
+    assert (
+        main(
+            [
+                "report",
+                "evening",
+                "--config",
+                str(config),
+                "--input",
+                str(payload),
+                "--submit-only",
+            ]
+        )
+        == 0
+    )
     from_cli = RevisionStore(tmp_path / "state").latest(DAY)
 
     assert from_cli.content == from_http.content
@@ -116,14 +130,20 @@ def test_evening_rejects_a_malformed_file(tmp_path, capsys):
 
 
 def test_drain_outbox_reports_pending_without_binding(tmp_path, capsys):
+    """Draining never binds a socket, and a night that cannot run stays pending.
+
+    The wiki here is a bare directory with no git remote, so the in-process handler
+    fails. The job must survive that: losing the owner's evening because the vault
+    checkout was misconfigured is the one outcome this queue exists to prevent.
+    """
     config = write_config(tmp_path)
     payload = write_payload(tmp_path / "evening.json")
-    main(["report", "evening", "--config", str(config), "--input", str(payload)])
+    main(["report", "evening", "--config", str(config), "--input", str(payload), "--submit-only"])
 
     assert main(["report", "serve", "--config", str(config), "--drain-outbox"]) == 0
     out = capsys.readouterr().out
     assert f"pending {DAY.isoformat()} revision 1" in out
-    assert "no evening handler configured" in out
+    assert "completed 0 of 1 pending" in out
     assert Outbox(tmp_path / "state").pending()[0].revision == 1
 
 

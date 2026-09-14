@@ -172,6 +172,30 @@ class Outbox:
         )
         (self._dir(CLAIMED) / job.name).unlink(missing_ok=True)
 
+    def resolve(self, day: str, revision: int) -> bool:
+        """Mark `(day, revision)` done because something else already ran it.
+
+        The CLI needs this: `report evening --input` submits *and* runs the night, so the
+        job the submission enqueued describes work that has already landed. Without this
+        the worker would claim it, find the session already applied, and churn.
+        """
+        name = OutboxJob(day=day, revision=revision, content_hash="", enqueued_at="").name
+        pending = self._dir(PENDING) / name
+        job = OutboxJob(day=day, revision=revision, content_hash="", enqueued_at="")
+        if pending.exists():
+            try:
+                job = OutboxJob.from_json(json.loads(pending.read_text(encoding="utf-8")))
+            except (OSError, ValueError, KeyError):
+                pass
+        _atomic_write_json(
+            self._dir(DONE) / name,
+            {**job.to_json(), "completed_at": datetime.now(timezone.utc).isoformat()},
+        )
+        removed = pending.exists()
+        pending.unlink(missing_ok=True)
+        (self._dir(CLAIMED) / name).unlink(missing_ok=True)
+        return removed
+
     def release(self, job: OutboxJob, error: str, *, count_attempt: bool = True) -> OutboxJob:
         """Return a failed job to `pending` for retry, or park it after max attempts.
 

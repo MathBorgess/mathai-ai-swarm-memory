@@ -8,6 +8,7 @@ option that only parses in one position is a documented command that does not ru
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from datetime import date
@@ -66,8 +67,28 @@ def _parser() -> argparse.ArgumentParser:
     evening.add_argument("--date", help="Calendar day (YYYY-MM-DD)")
     evening.add_argument(
         "--input",
-        type=Path,
-        help="Absolute path to a copied evening payload JSON (same body as POST /evening)",
+        help="Absolute path to a copied evening payload JSON, or '-' for stdin "
+        "(same body as POST /evening)",
+    )
+    evening.add_argument(
+        "--job-stdin",
+        action="store_true",
+        help="Read an outbox job on stdin and run the night for the revision it names",
+    )
+    evening.add_argument(
+        "--revision",
+        type=int,
+        help="Run the night for an already-stored revision (default: the latest)",
+    )
+    evening.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Commit the vault edit locally and skip push/PR (local demo)",
+    )
+    evening.add_argument(
+        "--submit-only",
+        action="store_true",
+        help="Store the revision and leave the night to the outbox worker",
     )
 
     for host in (sub.add_parser("serve", help="Serve reports and receive POST /evening"),
@@ -79,6 +100,11 @@ def _parser() -> argparse.ArgumentParser:
             "--drain-outbox",
             action="store_true",
             help="Process pending evening jobs once and exit; never binds a socket",
+        )
+        host.add_argument(
+            "--no-publish",
+            action="store_true",
+            help="Night commits the vault edit locally and skips push/PR (local demo)",
         )
     return parser
 
@@ -157,51 +183,156 @@ def _morning(config, args: argparse.Namespace, report_day: date | None) -> int:
 
 
 def _evening(config, args: argparse.Namespace, report_day: date | None) -> int:
-    if args.input is None:
-        print(
-            "error: report evening needs --input until F4 wires the night session",
-            file=sys.stderr,
+    """Three ways in, one engine.
+
+    `--input` is the copy-prompt path the owner uses when the VPS is down: the payload
+    goes through `submit_evening`, exactly like the form POST, and then the night runs
+    on the revision that produced. `--job-stdin` is the outbox dispatcher: the job names
+    a revision that is already stored, so nothing is enqueued again. Without either, the
+    latest stored revision is (re)processed, which is how a parked job is retried by hand.
+    """
+    from swarm_reports.server.outbox import Outbox, OutboxJob
+    from swarm_reports.server.revisions import RevisionStore
+    from swarm_reports.server.submit import SubmitRejected, parse_payload_text, submit_evening
+
+    publish = not args.no_publish
+
+    if args.job_stdin:
+        if args.input is not None:
+            print("error: --job-stdin and --input are mutually exclusive", file=sys.stderr)
+            return 2
+        try:
+            job = OutboxJob.from_json(json.loads(sys.stdin.read()))
+        except (ValueError, KeyError) as exc:
+            print(f"error: unreadable outbox job on stdin: {exc}", file=sys.stderr)
+            return 2
+        return _run_night(
+            config, date.fromisoformat(job.day), job.revision, job.content_hash or None, publish
         )
+
+    day = report_day
+    revision = args.revision
+
+    if args.input is not None:
+        text, source = _read_payload(args.input)
+        if text is None:
+            print(f"error: {source}", file=sys.stderr)
+            return 2
+        try:
+            payload = parse_payload_text(text)
+            if day is not None and payload.day != day:
+                raise SubmitRejected("day_mismatch", "--date does not match the payload day")
+            outcome = submit_evening(config, payload)
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"revision {outcome.revision} ({'new' if outcome.changed else 'unchanged'})")
+        day = date.fromisoformat(outcome.day)
+        revision = outcome.revision
+        if args.submit_only:
+            print("note: night left to the outbox worker (--submit-only)", file=sys.stderr)
+            return 0
+
+    if day is None:
+        print("error: report evening needs --input, --job-stdin or --date", file=sys.stderr)
         return 2
-    if not args.input.is_absolute():
-        print("error: --input must be an absolute path", file=sys.stderr)
-        return 2
+    if revision is None:
+        latest = RevisionStore(config.state_dir).latest(day)
+        if latest is None:
+            print(f"error: no evening revision stored for {day.isoformat()}", file=sys.stderr)
+            return 2
+        revision = latest.revision
+
+    code = _run_night(config, day, revision, None, publish)
+    if code == 0:
+        # The CLI already did the work the queued job names; leaving it pending would
+        # make the worker replay a no-op forever.
+        Outbox(config.state_dir).resolve(day.isoformat(), revision)
+    return code
+
+
+def _read_payload(raw: str) -> tuple[str | None, str]:
+    if raw == "-":
+        return sys.stdin.read(), ""
+    path = Path(raw)
+    if not path.is_absolute():
+        return None, "--input must be an absolute path or '-'"
     try:
-        from swarm_reports.server.submit import submit_from_file
-    except ImportError:
-        print("error: evening submission requires the F3 server module", file=sys.stderr)
-        return 2
+        return path.read_text(encoding="utf-8"), ""
+    except OSError as exc:
+        return None, str(exc)
+
+
+def _run_night(
+    config,
+    day: date,
+    revision: int,
+    expected_hash: str | None,
+    publish: bool,
+) -> int:
+    from swarm_reports.evening.session import EveningRejected, run_evening_session
+
     try:
-        outcome = submit_from_file(config, args.input, day=report_day)
-    except (OSError, ValueError) as exc:
+        result = run_evening_session(
+            config,
+            day=day,
+            revision=revision,
+            expected_hash=expected_hash,
+            publish=publish,
+        )
+    except EveningRejected as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"revision {outcome.revision} ({'new' if outcome.changed else 'unchanged'})")
-    if outcome.changed:
-        print("note: night session runs in F4; the job is queued in the outbox", file=sys.stderr)
-    return 0
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"evening {result.day} revision {result.revision}: {result.status}")
+    if result.wiki_commit:
+        print(f"note: {result.wiki_branch} @ {result.wiki_commit[:12]}", file=sys.stderr)
+    if result.pull_request_url:
+        print(f"note: {result.pull_request_url}", file=sys.stderr)
+    elif result.publish_status:
+        print(f"note: publish {result.publish_status}: {result.detail}", file=sys.stderr)
+    # A failed pull request is a failed effect, not a failed night: the metrics are
+    # durable. Exit 1 so a supervisor notices without treating the day as unclosed.
+    return 1 if result.publish_status == "failed" else 0
+
+
+def _evening_dispatcher(config, *, publish: bool = True):
+    """The handler `serve` uses by default.
+
+    `server.dispatch_command` stays available for an operator who wants the night in a
+    separate process, but it is no longer the only way to get one: a default install
+    that runs `report serve` closes the day without any wrapper script.
+    """
+    from swarm_reports.evening.session import make_dispatcher
+    from swarm_reports.server.outbox import BoundedCommandDispatcher
+
+    if config.server is not None and config.server.dispatch_command:
+        return BoundedCommandDispatcher(
+            config.server.dispatch_command,
+            timeout_seconds=config.server.dispatch_timeout_seconds,
+        )
+    return make_dispatcher(config, publish=publish)
 
 
 def _serve(config, args: argparse.Namespace) -> int:
     from swarm_reports.server.app import build_server
-    from swarm_reports.server.outbox import BoundedCommandDispatcher, Outbox, OutboxWorker
+    from swarm_reports.server.outbox import Outbox, OutboxWorker
+
+    dispatcher = _evening_dispatcher(config, publish=not args.no_publish)
 
     if args.drain_outbox:
-        # Useful after a crash or before F4 exists: shows what is waiting without
-        # opening a socket at all.
+        # Useful after a crash: runs everything waiting without opening a socket.
         outbox = Outbox(config.state_dir)
         pending = outbox.pending()
-        if config.server is None or not config.server.dispatch_command:
-            for job in pending:
-                print(f"pending {job.day} revision {job.revision} attempts {job.attempts}")
-            print(f"{len(pending)} pending; no evening handler configured (F4)")
-            return 0
+        for job in pending:
+            print(f"pending {job.day} revision {job.revision} attempts {job.attempts}")
         worker = OutboxWorker(
             outbox,
-            BoundedCommandDispatcher(
-                config.server.dispatch_command,
-                timeout_seconds=config.server.dispatch_timeout_seconds,
-            ),
+            dispatcher,
+            on_event=lambda message: print(message, file=sys.stderr),
         )
         print(f"completed {worker.drain_once()} of {len(pending)} pending")
         return 0
@@ -214,6 +345,7 @@ def _serve(config, args: argparse.Namespace) -> int:
     try:
         server = build_server(
             config,
+            dispatcher=dispatcher,
             logger=lambda message: print(message, file=sys.stderr),
             overrides=overrides or None,
         )

@@ -1,7 +1,8 @@
-# mathai-swarm-reports (F1 + F2 + F3)
+# mathai-swarm-reports (F1 + F2 + F3 + F4)
 
-Deterministic metrics (F1), morning HTML + wiki freeze runtime (F2), and the server that
-puts the report on the phone and receives the evening (F3).
+Deterministic metrics (F1), morning HTML + wiki freeze runtime (F2), the server that puts
+the report on the phone and receives the evening (F3), and the night session that
+validates, writes back, and records the ledger (F4).
 
 ## Layout
 
@@ -88,3 +89,18 @@ required, and only `cloudflare-access-jwt` may bind a non-loopback address. The 
 session is F4: jobs accumulate in `<state_dir>/outbox/pending/` and
 `report serve --drain-outbox` shows them without opening a socket. See
 `docs/operations/daily-reports-f3.md`.
+
+## F4 evening
+
+| Module | Role |
+|--------|------|
+| `swarm_reports.evening.session` | Single night engine (`run_evening_session`) |
+| `swarm_reports.evening.ledger` | Durable autonomous-action log for the morning band |
+| `swarm_reports.evening.config` | `evening` block: publish, reflection, lint |
+| `swarm_reports.wiki.night` | Isolated-branch vault writeback |
+| `swarm_reports.wiki.notes` | Daily/post markdown transforms |
+| `swarm_reports.wiki.publish` | Push + `gh` PR transport with expected-head gate |
+| `skills/daily-review/SKILL.md` | Operator/agent orientation for closing the day |
+
+Default `report serve` wires the in-process dispatcher; `report evening --input` shares
+`submit_evening` with `POST /evening`. See `docs/operations/daily-reports-f4.md`.

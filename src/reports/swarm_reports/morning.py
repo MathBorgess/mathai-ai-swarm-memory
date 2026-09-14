@@ -110,6 +110,23 @@ def _plan_to_frozen_items(plan: MorningPlan, state: ReportsState) -> list[Frozen
     return items
 
 
+def _with_real_ledger(plan: MorningPlan, state_dir: Path, day: date) -> MorningPlan:
+    """Replace the plan's declared ledger with what the night actually recorded.
+
+    The planner can only guess at what the mechanism did overnight; the ledger knows.
+    Plan-declared entries are kept as a fallback for ids the ledger has never seen, so a
+    skill that wants to surface something extra still can.
+    """
+    from swarm_reports.evening.ledger import morning_view
+
+    recorded, pending = morning_view(state_dir, day)
+    known = {entry.entry_id for entry in recorded}
+    plan.ledger = recorded + [e for e in plan.ledger if e.entry_id not in known]
+    seen = {draft.draft_id for draft in plan.review_drafts}
+    plan.review_drafts = plan.review_drafts + [d for d in pending if d.draft_id not in seen]
+    return plan
+
+
 def _plan_with_frozen_checklist(
     plan: MorningPlan,
     frozen: list[FrozenItem],
@@ -313,10 +330,14 @@ def run_morning(
             progress.enter(PHASE_FROZEN)
             save_progress(config.state_dir, progress)
 
-            render_plan = _plan_with_frozen_checklist(
-                plan,
-                frozen_items,
-                agenda=_refresh_agenda(report_day, sources, plan.agenda),
+            render_plan = _with_real_ledger(
+                _plan_with_frozen_checklist(
+                    plan,
+                    frozen_items,
+                    agenda=_refresh_agenda(report_day, sources, plan.agenda),
+                ),
+                config.state_dir,
+                report_day,
             )
             html = render_morning_html(
                 MorningViewModel(
@@ -382,6 +403,7 @@ def _render_only(
     bucket = current.days.get(report_day.isoformat())
     if bucket is not None and bucket.frozen_checklist:
         plan = _plan_with_frozen_checklist(plan, list(bucket.frozen_checklist))
+    plan = _with_real_ledger(plan, config.state_dir, report_day)
     metrics = build_metric_tiles(
         current, report_day, wiki_dir=config.wiki_dir, weights_path=config.weights_path
     )

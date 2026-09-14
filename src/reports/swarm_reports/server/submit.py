@@ -101,6 +101,11 @@ def submit_evening(
     )
 
 
+def parse_payload_text(text: str) -> EveningPayload:
+    """Parse a copied payload from a file or from stdin. Same validation as the POST."""
+    return parse_evening_payload(json.loads(text))
+
+
 def submit_from_file(
     config: ReportsConfig,
     path: Path,
@@ -108,8 +113,7 @@ def submit_from_file(
     day: date | None = None,
 ) -> SubmitOutcome:
     """The copy-prompt seam: the same JSON the browser would have POSTed."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    payload = parse_evening_payload(raw)
+    payload = parse_payload_text(path.read_text(encoding="utf-8"))
     if day is not None and payload.day != day:
         raise SubmitRejected("day_mismatch", "--date does not match the payload day")
     return submit_evening(config, payload)

@@ -53,7 +53,7 @@ def freeze_worktree_path(worktree_parent: Path, day: date) -> Path:
     return (worktree_parent / f"freeze-{day.isoformat()}").resolve()
 
 
-def _run_git(cwd: Path, *args: str) -> str:
+def run_git(cwd: Path, *args: str) -> str:
     proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -66,7 +66,7 @@ def _run_git(cwd: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
-def _git_ok(cwd: Path, *args: str) -> bool:
+def git_ok(cwd: Path, *args: str) -> bool:
     proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -129,7 +129,7 @@ def render_daily_from_template(template: str | None, day: date) -> str:
     return body
 
 
-def _prepare_worktree(
+def prepare_worktree(
     wiki_dir: Path,
     day: date,
     wt_path: Path,
@@ -138,25 +138,29 @@ def _prepare_worktree(
     local_only: bool,
     remote: str,
 ) -> str:
-    """Create or reuse the per-day worktree and return the base ref it started from."""
+    """Create or reuse the per-day worktree and return the base ref it started from.
+
+    Shared with the F4 night session: both halves of the cycle must fetch before they
+    edit and must never touch the live checkout.
+    """
     if local_only:
-        base = _run_git(wiki_dir, "rev-parse", "HEAD")
+        base = run_git(wiki_dir, "rev-parse", "HEAD")
         base_ref = "HEAD"
     else:
-        if not _git_ok(wiki_dir, "remote", "get-url", remote):
+        if not git_ok(wiki_dir, "remote", "get-url", remote):
             raise RuntimeError(
                 f"wiki has no '{remote}' remote; pass local_only=True only for tests"
             )
         # A silent fetch failure would freeze against a stale base and mislabel the
         # snapshot as isolated from origin/main. Governance requires a hard failure.
-        _run_git(wiki_dir, "fetch", "--quiet", remote, "main")
+        run_git(wiki_dir, "fetch", "--quiet", remote, "main")
         base_ref = f"{remote}/main"
-        base = _run_git(wiki_dir, "rev-parse", base_ref)
+        base = run_git(wiki_dir, "rev-parse", base_ref)
 
-    branch_exists = _git_ok(wiki_dir, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+    branch_exists = git_ok(wiki_dir, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
 
     if wt_path.exists():
-        head = _run_git(wt_path, "rev-parse", "--abbrev-ref", "HEAD")
+        head = run_git(wt_path, "rev-parse", "--abbrev-ref", "HEAD")
         if head != branch:
             raise RuntimeError(
                 f"freeze worktree {wt_path} is on '{head}', expected '{branch}'"
@@ -165,10 +169,10 @@ def _prepare_worktree(
         wt_path.parent.mkdir(parents=True, exist_ok=True)
         if branch_exists:
             # Reuse the existing freeze branch; `-B` here would reset away a real commit.
-            _run_git(wiki_dir, "worktree", "add", str(wt_path), branch)
+            run_git(wiki_dir, "worktree", "add", str(wt_path), branch)
         else:
-            _run_git(wiki_dir, "worktree", "add", "-b", branch, str(wt_path), base)
-        head = _run_git(wt_path, "rev-parse", "--abbrev-ref", "HEAD")
+            run_git(wiki_dir, "worktree", "add", "-b", branch, str(wt_path), base)
+        head = run_git(wt_path, "rev-parse", "--abbrev-ref", "HEAD")
         if head != branch:
             raise RuntimeError(f"freeze worktree checked out '{head}', expected '{branch}'")
     return base_ref
@@ -205,7 +209,7 @@ def apply_wiki_freeze(
 
     parent = worktree_parent or (wiki_dir.parent / ".wiki-freeze")
     wt_path = freeze_worktree_path(parent, day)
-    base_ref = _prepare_worktree(
+    base_ref = prepare_worktree(
         wiki_dir, day, wt_path, branch, local_only=local_only, remote=remote
     )
 
@@ -220,11 +224,11 @@ def apply_wiki_freeze(
         wt_daily.write_text(body, encoding="utf-8")
 
     if _has_frozen_block(body):
-        head = _run_git(wt_path, "rev-parse", "HEAD")
+        head = run_git(wt_path, "rev-parse", "HEAD")
         recovered = known_commit or head
         if known_commit and known_commit != head:
             # Recover the exact recorded snapshot rather than trusting branch HEAD.
-            _run_git(wt_path, "checkout", "--quiet", known_commit, "--", daily_rel)
+            run_git(wt_path, "checkout", "--quiet", known_commit, "--", daily_rel)
             recovered = known_commit
         return FreezeResult(
             applied=False,
@@ -239,11 +243,11 @@ def apply_wiki_freeze(
     block = _build_frozen_block(items, snapshot=snapshot)
     wt_daily.write_text(_inject_hoje_block(body, block), encoding="utf-8")
 
-    _run_git(wt_path, "add", "--", daily_rel)
-    if _git_ok(wt_path, "diff", "--cached", "--quiet"):
+    run_git(wt_path, "add", "--", daily_rel)
+    if git_ok(wt_path, "diff", "--cached", "--quiet"):
         raise RuntimeError("freeze produced no staged changes")
-    _run_git(wt_path, "commit", "--quiet", "-m", f"reports: freeze morning checklist {day.isoformat()}")
-    commit_sha = _run_git(wt_path, "rev-parse", "HEAD")
+    run_git(wt_path, "commit", "--quiet", "-m", f"reports: freeze morning checklist {day.isoformat()}")
+    commit_sha = run_git(wt_path, "rev-parse", "HEAD")
 
     outcome: PublishOutcome | None = None
     if publisher is not None:
