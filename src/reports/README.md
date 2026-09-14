@@ -1,7 +1,6 @@
-# mathai-swarm-reports (F1)
+# mathai-swarm-reports (F1 + F2)
 
-Deterministic metrics for the daily report cycle: RES (content) and execution
-(conclusion, date drift, scope penalty). Pure Python, no network.
+Deterministic metrics (F1) and morning HTML + wiki freeze runtime (F2).
 
 ## Layout
 
@@ -50,4 +49,14 @@ Tests use `tests/fixtures/metrics/res-weights.json` only.
 cd src/reports && python -m pip install -e '.[dev]' && python -m pytest -q
 ```
 
-F2 will wire `mathai-swarm report`; F1 does not depend on broker CLI.
+## F2 morning
+
+| Module | Role |
+|--------|------|
+| `swarm_reports.morning` | Freeze + metrics + HTML |
+| `swarm_reports.cli` | `mathai-swarm-reports report morning` |
+| `swarm_reports.evening_schema` | `EveningPayload` for F3/F4 |
+| `swarm_reports.wiki.freeze` | Isolated worktree checklist freeze |
+
+`mathai-swarm report morning` delegates from `src/auth-broker` when both packages share a venv.
+See `docs/operations/daily-reports-f2.md`.

@@ -37,7 +37,10 @@ def _parser() -> argparse.ArgumentParser:
         prog="mathai-swarm",
         description="Administer swarm principals and grants in a local SQLite store.",
     )
-    parser.add_argument("--store", required=True, help="Absolute path to the broker SQLite file")
+    parser.add_argument(
+        "--store",
+        help="Absolute path to the broker SQLite file (required for admin commands)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     principal = sub.add_parser("principal", help="Register or list principals")
@@ -72,7 +75,29 @@ def _parser() -> argparse.ArgumentParser:
     token_sub = token.add_subparsers(dest="token_command", required=True)
     token_revoke = token_sub.add_parser("revoke", help="Revoke a refresh family immediately")
     token_revoke.add_argument("--family", required=True)
+
+    report = sub.add_parser(
+        "report",
+        help="Daily reports (requires mathai-swarm-reports in the same venv)",
+    )
+    report_sub = report.add_subparsers(dest="report_command", required=True)
+    report_sub.add_parser("morning", help="Generate morning HTML (delegates to swarm_reports)")
+    report_sub.add_parser("evening", help="Evening report (F4; not implemented in F2)")
     return parser
+
+
+def _delegate_report(argv: list[str]) -> int:
+    try:
+        from swarm_reports.cli import main as reports_main
+    except ImportError:
+        print(
+            "error: mathai-swarm-reports is not installed. "
+            "Install both packages in the same venv, e.g.\n"
+            "  pip install -e src/auth-broker -e src/reports",
+            file=sys.stderr,
+        )
+        return 2
+    return reports_main(argv)
 
 
 def main(argv: list[str] | None = None, *, github_transport=None, now: datetime | None = None) -> int:
@@ -81,6 +106,27 @@ def main(argv: list[str] | None = None, *, github_transport=None, now: datetime 
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0)
+    if args.command == "report":
+        if args.report_command == "evening":
+            print("error: report evening is not available until F4", file=sys.stderr)
+            return 2
+        tail = ["report", "morning"]
+        # Forward unknown flags from argv after 'morning'
+        if argv is None:
+            import sys as _sys
+
+            raw = _sys.argv[1:]
+        else:
+            raw = list(argv)
+        try:
+            idx = raw.index("morning")
+            tail.extend(raw[idx + 1 :])
+        except ValueError:
+            pass
+        return _delegate_report(tail)
+    if not args.store:
+        print("error: --store is required for broker admin commands", file=sys.stderr)
+        return 2
     store_path = Path(args.store)
     if not store_path.is_absolute():
         print("error: --store must be an absolute path", file=sys.stderr)
