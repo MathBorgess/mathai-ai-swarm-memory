@@ -7,8 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-import yaml
-
+from swarm_reports.metrics.frontmatter import split_frontmatter
 from swarm_reports.metrics.ids import stable_task_id
 
 CHECKLIST_LINE = re.compile(
@@ -67,18 +66,11 @@ def _is_p0_line(line: str, body: str) -> bool:
     return False
 
 
-def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    raw = parts[1]
-    body = parts[2].lstrip("\n")
-    data = yaml.safe_load(raw) or {}
-    if not isinstance(data, dict):
-        data = {}
-    return data, body
+def _strip_inline_swarm_comments(text: str) -> str:
+    text = META_COMMENT.sub("", text)
+    text = CLASS_COMMENT.sub("", text)
+    text = P0_COMMENT.sub("", text)
+    return text.strip()
 
 
 def _extract_hoje_section(body: str) -> str:
@@ -159,12 +151,12 @@ def parse_daily_markdown(text: str, day: date | None = None) -> DailyNote:
             next_is_added = True
             continue
 
+        match = CHECKLIST_LINE.match(line)
         meta = _parse_meta_comment(line)
-        if meta:
+        if meta and match is None:
             pending_meta = meta
             continue
 
-        match = CHECKLIST_LINE.match(line)
         if not match:
             continue
 
@@ -173,11 +165,13 @@ def parse_daily_markdown(text: str, day: date | None = None) -> DailyNote:
         classification = _parse_classification(line) or _parse_classification(body_text)
         is_p0 = _is_p0_line(line, body_text)
 
-        meta = {**pending_meta, **_parse_meta_comment(body_text)}
+        meta = {**pending_meta, **_parse_meta_comment(line), **_parse_meta_comment(body_text)}
         pending_meta = {}
 
-        task_id = meta.get("id") or stable_task_id(body_text, calendar_entries)
+        id_source = _strip_inline_swarm_comments(body_text)
+        task_id = meta.get("id") or stable_task_id(id_source, calendar_entries)
         first_planned_raw = meta.get("first_planned") or meta.get("first-planned")
+        # Explicit contract: missing first_planned in meta defaults to the note calendar day.
         first_planned = date.fromisoformat(first_planned_raw) if first_planned_raw else day
 
         added_after = next_is_added or meta.get("added_after_freeze") == "true"
@@ -187,10 +181,11 @@ def parse_daily_markdown(text: str, day: date | None = None) -> DailyNote:
         if meta.get("frozen") == "false":
             frozen_flag = False
 
+        display_text = _strip_inline_swarm_comments(body_text)
         items.append(
             ChecklistItem(
                 task_id=task_id,
-                text=body_text.strip(),
+                text=display_text,
                 done=done,
                 frozen=frozen_flag,
                 added_after_freeze=added_after,

@@ -24,7 +24,7 @@ def test_date_drift_carries_first_planned_across_days():
     assert drift["MAT-193"] == 2
 
 
-def test_max_three_p0_counted():
+def test_count_open_p0_returns_all_open_items():
     items = [
         ChecklistItem(
             task_id=f"MAT-{200+i}",
@@ -39,4 +39,4 @@ def test_max_three_p0_counted():
         )
         for i in range(5)
     ]
-    assert len(count_open_p0(items)) == 3
+    assert len(count_open_p0(items)) == 5

@@ -16,7 +16,7 @@ Exportadas em `swarm_reports`:
 
 - `parse_daily_markdown`, `parse_post_markdown`
 - `load_res_weights`, `compute_engagement`, `compute_res`, `period_res_summary`
-- `compute_completion`, `compute_date_drift`, `compute_scope_penalty`, `count_open_p0`
+- `compute_completion`, `compute_date_drift`, `compute_days_without_closure`, `compute_scope_penalty`, `count_open_p0`
 - `load_state`, `save_state`, `apply_morning_freeze`, `mark_evening_validated`
 
 ## Pesos RES

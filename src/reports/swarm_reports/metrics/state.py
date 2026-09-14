@@ -5,17 +5,23 @@ Freeze semantics (F1 contract for F2–F6):
 - Denominator for completion uses `frozen_checklist` task ids, never lines added later.
 - `evening_validated` gates completion; absent evening excludes the day from completion.
 - Carryover stores `first_planned` + stable `task_id` for date-drift across days.
+
+Concurrency: F2 owns cross-process file locking. Callers that read-modify-write
+`reports-state.json` must hold that lock; F1 only guarantees atomic replace on save.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 STATE_VERSION = 1
+MAX_P0_PER_DAY = 3
 
 
 @dataclass
@@ -24,14 +30,18 @@ class FrozenItem:
     text: str
     first_planned: date
     is_p0: bool = False
+    frozen: bool = True
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload = {
             "task_id": self.task_id,
             "text": self.text,
             "first_planned": self.first_planned.isoformat(),
             "is_p0": self.is_p0,
         }
+        if self.frozen is not True:
+            payload["frozen"] = self.frozen
+        return payload
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> FrozenItem:
@@ -40,12 +50,14 @@ class FrozenItem:
             text=str(data.get("text") or ""),
             first_planned=date.fromisoformat(str(data["first_planned"])),
             is_p0=bool(data.get("is_p0")),
+            frozen=bool(data.get("frozen", True)),
         )
 
 
 @dataclass
 class DayState:
     frozen_checklist: list[FrozenItem] = field(default_factory=list)
+    morning_freeze_applied: bool = False
     frozen_at_commit: str | None = None
     frozen_at_snapshot: str | None = None
     evening_validated: bool = False
@@ -55,6 +67,7 @@ class DayState:
     def to_json(self) -> dict[str, Any]:
         return {
             "frozen_checklist": [item.to_json() for item in self.frozen_checklist],
+            "morning_freeze_applied": self.morning_freeze_applied,
             "frozen_at_commit": self.frozen_at_commit,
             "frozen_at_snapshot": self.frozen_at_snapshot,
             "evening_validated": self.evening_validated,
@@ -70,8 +83,12 @@ class DayState:
             for entry in frozen_raw
             if isinstance(entry, dict)
         ]
+        morning_freeze_applied = bool(data.get("morning_freeze_applied"))
+        if not morning_freeze_applied and frozen:
+            morning_freeze_applied = True
         return cls(
             frozen_checklist=frozen,
+            morning_freeze_applied=morning_freeze_applied,
             frozen_at_commit=data.get("frozen_at_commit"),
             frozen_at_snapshot=data.get("frozen_at_snapshot"),
             evening_validated=bool(data.get("evening_validated")),
@@ -121,7 +138,31 @@ def load_state(path: Path) -> ReportsState:
 
 def save_state(path: Path, state: ReportsState) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state.to_json(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(state.to_json(), indent=2, sort_keys=True) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=".reports-state-", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+    os.chmod(path, 0o600)
+
+
+def _validate_freeze_items(items: list[FrozenItem]) -> None:
+    seen: set[str] = set()
+    p0_count = 0
+    for item in items:
+        if item.task_id in seen:
+            raise ValueError(f"duplicate frozen task_id '{item.task_id}'")
+        seen.add(item.task_id)
+        if item.is_p0:
+            p0_count += 1
+    if p0_count > MAX_P0_PER_DAY:
+        raise ValueError(f"at most {MAX_P0_PER_DAY} P0 items allowed in morning freeze")
 
 
 def apply_morning_freeze(
@@ -134,16 +175,28 @@ def apply_morning_freeze(
 ) -> bool:
     """Record frozen checklist for `day`. Returns False if already frozen (no-op)."""
     bucket = state.get_day(day)
-    if bucket.frozen_checklist:
+    if bucket.morning_freeze_applied:
         return False
-    bucket.frozen_checklist = list(items)
+    _validate_freeze_items(items)
+    bucket.frozen_checklist = [
+        FrozenItem(
+            task_id=item.task_id,
+            text=item.text,
+            first_planned=item.first_planned,
+            is_p0=item.is_p0,
+            frozen=item.frozen,
+        )
+        for item in items
+    ]
+    bucket.morning_freeze_applied = True
     bucket.frozen_at_commit = commit
     bucket.frozen_at_snapshot = snapshot
-    for item in items:
+    for item in bucket.frozen_checklist:
         bucket.carryover[item.task_id] = {
             "first_planned": item.first_planned.isoformat(),
             "text": item.text,
             "is_p0": item.is_p0,
+            "frozen": item.frozen,
         }
     return True
 

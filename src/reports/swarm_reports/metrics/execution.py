@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
-from typing import Iterable
 
 from swarm_reports.metrics.daily import ChecklistItem, DailyNote
 
@@ -48,12 +48,24 @@ def _normalize_class(value: str | None) -> str | None:
     return value.strip().lower()
 
 
+def _unique_ids(ids: Iterable[str], label: str) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for task_id in ids:
+        key = str(task_id)
+        if key in seen:
+            raise ValueError(f"duplicate {label} id '{key}'")
+        seen.add(key)
+        ordered.append(key)
+    return ordered
+
+
 def frozen_denominator_ids(
     note: DailyNote,
     frozen_snapshot_ids: Iterable[str] | None,
 ) -> list[str]:
     if frozen_snapshot_ids is not None:
-        return list(frozen_snapshot_ids)
+        return _unique_ids(frozen_snapshot_ids, "frozen snapshot")
     return [item.task_id for item in note.items if item.frozen and not item.added_after_freeze]
 
 
@@ -74,7 +86,10 @@ def compute_completion(
 
     if evening is None:
         return None
-    validated = evening.validated_complete_ids
+    if evening.day != note.day:
+        raise ValueError("evening submission day must match daily note day")
+    validated = frozenset(_unique_ids(evening.validated_complete_ids, "validated"))
+
     completed = sum(1 for task_id in proposed_ids if task_id in validated)
     return completed / len(proposed_ids)
 
@@ -84,13 +99,20 @@ def compute_date_drift(
     as_of: date,
     *,
     open_task_ids: Iterable[str] | None = None,
+    validated_complete_ids: Iterable[str] | None = None,
 ) -> dict[str, int]:
     open_ids = set(open_task_ids) if open_task_ids is not None else None
+    validated_ids = (
+        set(validated_complete_ids) if validated_complete_ids is not None else None
+    )
     drift: dict[str, int] = {}
     for item in items:
         if open_ids is not None and item.task_id not in open_ids:
             continue
-        if item.done and open_ids is None:
+        if validated_ids is not None:
+            if item.task_id in validated_ids:
+                continue
+        elif item.done:
             continue
         if item.first_planned is None:
             continue
@@ -111,7 +133,36 @@ def count_open_p0(items: list[ChecklistItem], *, validated_ids: set[str] | None 
         if item.done and validated_ids is None:
             continue
         open_p0.append(item.task_id)
-    return open_p0[:3]
+    return open_p0
+
+
+def compute_days_without_closure(
+    planned_days: Iterable[date],
+    *,
+    validated_days: Iterable[date],
+    absent_days: Iterable[date] = (),
+    range_start: date,
+    range_end: date,
+    as_of: date,
+) -> int:
+    """Count planned days in range lacking evening closure.
+
+    Excludes dates after ``as_of`` and the current ``as_of`` day when it is still
+    pending (neither validated nor marked absent).
+    """
+    validated = set(validated_days)
+    absent = set(absent_days)
+    count = 0
+    for day in sorted(set(planned_days)):
+        if day < range_start or day > range_end:
+            continue
+        if day > as_of:
+            continue
+        if day == as_of and day not in validated and day not in absent:
+            continue
+        if day not in validated and day not in absent:
+            count += 1
+    return count
 
 
 def compute_scope_penalty(

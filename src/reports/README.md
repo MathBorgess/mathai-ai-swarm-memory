@@ -39,7 +39,10 @@ Tests use `tests/fixtures/metrics/res-weights.json` only.
 - Completion denominator = frozen snapshot ids (state file or external list), not
   lines added after freeze.
 - Absent evening → completion metric is `None` for that day; date drift still
-  accumulates for open items.
+  accumulates for open items (unchecked boxes alone do not close drift; pass
+  `validated_complete_ids` to `compute_date_drift`).
+- `save_state` uses atomic replace and mode `0600`; callers must hold F2 file
+  locks across read-modify-write.
 
 ## Tests
 

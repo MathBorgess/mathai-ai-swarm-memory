@@ -6,21 +6,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-import yaml
-
+from swarm_reports.metrics.frontmatter import split_frontmatter
 from swarm_reports.metrics.res import PostMetrics
-
-
-def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    data = yaml.safe_load(parts[1]) or {}
-    if not isinstance(data, dict):
-        data = {}
-    return data, parts[2]
 
 
 @dataclass

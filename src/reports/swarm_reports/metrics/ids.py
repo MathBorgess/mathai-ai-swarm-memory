@@ -7,10 +7,21 @@ import re
 from typing import Any
 
 MAT_PATTERN = re.compile(r"\bMAT-\d+\b", re.IGNORECASE)
+_SWARM_META = re.compile(
+    r"<!--\s*swarm:task-meta\s+(?:\w+=[^\s]+(?:\s+|$))+\s*-->",
+    re.IGNORECASE,
+)
+_SWARM_CLASS = re.compile(r"<!--\s*swarm:class\s+\w+\s*-->", re.IGNORECASE)
+_SWARM_P0 = re.compile(r"<!--\s*swarm:p0\s*-->", re.IGNORECASE)
 
 
 def normalize_task_text(text: str) -> str:
     stripped = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    stripped = _SWARM_META.sub("", stripped)
+    stripped = _SWARM_CLASS.sub("", stripped)
+    stripped = _SWARM_P0.sub("", stripped)
+    stripped = re.sub(r"\bP0\b", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"\bP-0\b", "", stripped, flags=re.IGNORECASE)
     stripped = re.sub(r"\*\*", "", stripped)
     stripped = re.sub(r"\s+", " ", stripped.strip().lower())
     return stripped

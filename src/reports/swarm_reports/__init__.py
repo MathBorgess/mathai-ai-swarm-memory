@@ -9,6 +9,7 @@ from swarm_reports.metrics.execution import (
     ScopeClassification,
     compute_completion,
     compute_date_drift,
+    compute_days_without_closure,
     compute_scope_penalty,
     count_open_p0,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "apply_morning_freeze",
     "compute_completion",
     "compute_date_drift",
+    "compute_days_without_closure",
     "compute_engagement",
     "compute_res",
     "compute_scope_penalty",
