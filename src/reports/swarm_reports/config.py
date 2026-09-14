@@ -10,6 +10,8 @@ from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
+from swarm_reports.server.config import ServerConfig, load_server_config
+
 CONFIG_ENV = "MATHAI_REPORTS_CONFIG"
 
 
@@ -60,6 +62,9 @@ class ReportsConfig:
     #: Public origin the report is served from, e.g. `https://reports.mathai.com.br`.
     #: Absent means "no server": the HTML then offers only the copy-prompt path.
     public_origin: str | None = None
+    #: F3 server profile. Absent means the server cannot start at all, so forgetting to
+    #: choose an auth profile can never turn into a public vault.
+    server: ServerConfig | None = None
 
     @property
     def evening_post_url(self) -> str | None:
@@ -97,6 +102,7 @@ class ReportsConfig:
             timezone=tz,
             planner_provider=planner,
             public_origin=normalize_public_origin(data.get("public_origin")),
+            server=load_server_config(data.get("server")),
         )
 
 

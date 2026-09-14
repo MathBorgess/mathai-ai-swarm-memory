@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -68,6 +69,17 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Absolute path to a copied evening payload JSON (same body as POST /evening)",
     )
+
+    for host in (sub.add_parser("serve", help="Serve reports and receive POST /evening"),
+                 report_sub.add_parser("serve", help="Alias of the top-level serve")):
+        _config_flag(host, suppress=True)
+        host.add_argument("--host", help="Override server.bind_host (still gated by auth_mode)")
+        host.add_argument("--port", type=int, help="Override server.port")
+        host.add_argument(
+            "--drain-outbox",
+            action="store_true",
+            help="Process pending evening jobs once and exit; never binds a socket",
+        )
     return parser
 
 
@@ -83,7 +95,10 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code or 0)
 
-    if args.command != "report":
+    command = args.command
+    if command == "report":
+        command = args.report_command
+    if command not in ("morning", "evening", "serve"):
         parser.print_help()
         return 2
 
@@ -101,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --date must be YYYY-MM-DD", file=sys.stderr)
             return 2
 
-    if args.report_command == "evening":
+    if command == "serve":
+        return _serve(config, args)
+    if command == "evening":
         return _evening(config, args, report_day)
     return _morning(config, args, report_day)
 
@@ -162,6 +179,59 @@ def _evening(config, args: argparse.Namespace, report_day: date | None) -> int:
     print(f"revision {outcome.revision} ({'new' if outcome.changed else 'unchanged'})")
     if outcome.changed:
         print("note: night session runs in F4; the job is queued in the outbox", file=sys.stderr)
+    return 0
+
+
+def _serve(config, args: argparse.Namespace) -> int:
+    from swarm_reports.server.app import build_server
+    from swarm_reports.server.outbox import BoundedCommandDispatcher, Outbox, OutboxWorker
+
+    if args.drain_outbox:
+        # Useful after a crash or before F4 exists: shows what is waiting without
+        # opening a socket at all.
+        outbox = Outbox(config.state_dir)
+        pending = outbox.pending()
+        if config.server is None or not config.server.dispatch_command:
+            for job in pending:
+                print(f"pending {job.day} revision {job.revision} attempts {job.attempts}")
+            print(f"{len(pending)} pending; no evening handler configured (F4)")
+            return 0
+        worker = OutboxWorker(
+            outbox,
+            BoundedCommandDispatcher(
+                config.server.dispatch_command,
+                timeout_seconds=config.server.dispatch_timeout_seconds,
+            ),
+        )
+        print(f"completed {worker.drain_once()} of {len(pending)} pending")
+        return 0
+
+    overrides: dict[str, object] = {}
+    if args.host:
+        overrides["bind_host"] = args.host
+    if args.port:
+        overrides["port"] = args.port
+    try:
+        server = build_server(
+            config,
+            logger=lambda message: print(message, file=sys.stderr),
+            overrides=overrides or None,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    host, port = server.address
+    print(f"serving {config.output_dir} on http://{host}:{port} "
+          f"({server.server_config.auth_mode})")
+    server.start()
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
     return 0
 
 

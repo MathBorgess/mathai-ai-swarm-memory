@@ -1,6 +1,7 @@
-# mathai-swarm-reports (F1 + F2)
+# mathai-swarm-reports (F1 + F2 + F3)
 
-Deterministic metrics (F1) and morning HTML + wiki freeze runtime (F2).
+Deterministic metrics (F1), morning HTML + wiki freeze runtime (F2), and the server that
+puts the report on the phone and receives the evening (F3).
 
 ## Layout
 
@@ -69,3 +70,21 @@ cd src/reports && python -m pip install -e '.[dev]' && python -m pytest -q
 
 `mathai-swarm report ...` forwards verbatim to this CLI when both packages share a venv;
 `--config` parses before or after the subcommand. See `docs/operations/daily-reports-f2.md`.
+
+## F3 server
+
+| Module | Role |
+|--------|------|
+| `swarm_reports.server.app` | Routes, security headers, origin check, `ReportServer` |
+| `swarm_reports.server.config` | Auth profiles and the bind gate that refuses a public start without Access |
+| `swarm_reports.server.access` | Cloudflare Access RS256 verification, stdlib only |
+| `swarm_reports.server.submit` | The single submission path shared by POST and `--input` |
+| `swarm_reports.server.revisions` | Immutable numbered revisions, content-hash dedup |
+| `swarm_reports.server.outbox` | Durable jobs for the F4 night session, one claim each |
+
+Three routes and nothing else: `/YYYY-MM-DD.html`, `POST /evening`,
+`GET /evening/revision?day=...` (plus `/healthz` on loopback). `server.auth_mode` is
+required, and only `cloudflare-access-jwt` may bind a non-loopback address. The night
+session is F4: jobs accumulate in `<state_dir>/outbox/pending/` and
+`report serve --drain-outbox` shows them without opening a socket. See
+`docs/operations/daily-reports-f3.md`.
