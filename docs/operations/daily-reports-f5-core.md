@@ -59,8 +59,9 @@ by the caller at runtime (`state_dir` pattern, same as the rest of
 PYTHONPATH=src/reports python3 -m pytest src/reports/tests/test_dispatch*.py -q
 ```
 
-65 tests, all against fakes/tmp_path — no network, no subprocess to a real
-provider CLI, no GitHub call.
+248 dispatch tests (`test_dispatch_*.py`), all against fakes/tmp_path — no
+network, no subprocess to a real provider CLI, no GitHub call. Optional
+mutation harness: `cd src/reports && python3 mutation_check.py`.
 
 ## Unresolved / decisions for the owner
 

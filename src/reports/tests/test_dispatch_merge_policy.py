@@ -332,6 +332,12 @@ def test_plain_rename_inside_the_allowlist_still_merges():
 # --- finding 1e: malformed paths are rejected, not repaired -----------------
 
 
+def test_backslash_paths_fail_with_an_explicit_backslash_reason():
+    """Backslashes are rejected before generic charset rules so we never 'repair' them."""
+    with pytest.raises(MalformedPath, match="backslash"):
+        normalize_path("daily\\note.md")
+
+
 @pytest.mark.parametrize(
     "bad",
     [
