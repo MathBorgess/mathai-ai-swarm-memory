@@ -56,6 +56,65 @@ from swarm_reports.wiki.freeze import apply_wiki_freeze
 from swarm_reports.wiki.publish import QueuedPublisher, WikiPublisher
 
 
+def _discovery_placeholder(config: ReportsConfig) -> str:
+    if not config.discovery:
+        return ""
+    try:
+        from swarm_reports.discovery.orchestrator import run_discovery
+
+        batch = run_discovery(
+            {**config.discovery, "state_dir": str(config.state_dir)},
+            known_ledger_action_ids=(),
+        )
+        if batch.errors and not batch.items:
+            return f"descoberta parcial: {len(batch.errors)} fonte(s) falharam"
+        if not batch.items:
+            return ""
+        lines = [f"{item.kind} {item.id}: {item.title}" for item in batch.items[:8]]
+        extra = len(batch.items) - len(lines)
+        suffix = f" (+{extra} mais)" if extra > 0 else ""
+        return "Fora do fluxo: " + "; ".join(lines) + suffix
+    except Exception as exc:  # noqa: BLE001 - discovery must not block the morning
+        return f"descoberta indisponível ({type(exc).__name__})"
+
+
+def _runtime_html_fields(config: ReportsConfig) -> tuple[list[tuple[str, str, str]], list[dict], str]:
+    from swarm_reports.dispatch.runtime_store import load_runtime
+
+    runtime = load_runtime(config.state_dir)
+    deferred = [(d.task_id, d.title, d.reason) for d in runtime.deferred]
+    return deferred, list(runtime.digest_cards), runtime.dispatch_note
+
+
+def _maybe_dispatch_handoffs(
+    config: ReportsConfig,
+    report_day: date,
+    plan: MorningPlan,
+    *,
+    dispatched: bool,
+) -> None:
+    if not dispatched or not plan.handoffs or config.dispatch_policy_path is None:
+        return
+    from swarm_reports.dispatch.morning_dispatch import ProviderProbe, run_morning_handoff_dispatch
+    from swarm_reports.dispatch.policy_config import load_dispatch_policy
+    from swarm_reports.dispatch.providers import SubprocessRunner
+
+    policy = load_dispatch_policy(config.dispatch_policy_path)
+    # Quota probes are optional: unknown budget uses explicit estimates from policy.
+    probes = [
+        ProviderProbe(provider=name, remaining_pct=None, probed_at=None, note="not probed in CI")
+        for name in policy.routing.order
+    ]
+    run_morning_handoff_dispatch(
+        policy=policy,
+        state_dir=config.state_dir,
+        day=report_day.isoformat(),
+        handoffs=plan.handoffs,
+        probes=probes,
+        runner=SubprocessRunner(),
+    )
+
+
 @dataclass(frozen=True)
 class MorningResult:
     html_path: Path
@@ -276,6 +335,8 @@ def run_morning(
             plan, dispatched = _dispatch_planner(
                 config, report_day, plan_path, sources, progress, config.state_dir
             )
+            if config.discovery:
+                plan.discovery_placeholder = _discovery_placeholder(config) or plan.discovery_placeholder
             blocker = plan.freeze_blocker()
             if blocker:
                 # Refusing here is the point: freezing is irreversible for the day.
@@ -330,6 +391,8 @@ def run_morning(
             progress.enter(PHASE_FROZEN)
             save_progress(config.state_dir, progress)
 
+            _maybe_dispatch_handoffs(config, report_day, plan, dispatched=dispatched)
+
             render_plan = _with_real_ledger(
                 _plan_with_frozen_checklist(
                     plan,
@@ -339,6 +402,9 @@ def run_morning(
                 config.state_dir,
                 report_day,
             )
+            if config.discovery and not render_plan.discovery_placeholder:
+                render_plan.discovery_placeholder = _discovery_placeholder(config)
+            deferred, digest_cards, dispatch_note = _runtime_html_fields(config)
             html = render_morning_html(
                 MorningViewModel(
                     day=report_day,
@@ -349,6 +415,9 @@ def run_morning(
                     done_task_ids=sorted(validated_ids),
                     post_url=config.evening_post_url,
                     revision_url=config.evening_revision_url(report_day),
+                    deferred_handoffs=deferred,
+                    digest_cards=digest_cards,
+                    dispatch_note=dispatch_note,
                 )
             )
             html_path = html_output_path(config, report_day)

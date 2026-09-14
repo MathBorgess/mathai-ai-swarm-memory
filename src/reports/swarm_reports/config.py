@@ -68,6 +68,10 @@ class ReportsConfig:
     server: ServerConfig | None = None
     #: F4 night session. Always present; the default publishes nothing over the network.
     evening: EveningConfig = EveningConfig()
+    #: F5 dispatch policy JSON (allowlist, quota, routing). Outside Git on the VPS.
+    dispatch_policy_path: Path | None = None
+    #: F6 read-only discovery config (repos, Linear, wiki log path).
+    discovery: dict[str, Any] | None = None
 
     @property
     def evening_post_url(self) -> str | None:
@@ -107,7 +111,20 @@ class ReportsConfig:
             public_origin=normalize_public_origin(data.get("public_origin")),
             server=load_server_config(data.get("server")),
             evening=EveningConfig.from_mapping(data.get("evening")),
+            dispatch_policy_path=_optional_abs_path(data.get("dispatch_policy_path")),
+            discovery=data.get("discovery") if isinstance(data.get("discovery"), dict) else None,
         )
+
+
+def _optional_abs_path(raw: Any) -> Path | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("dispatch_policy_path must be a non-empty absolute path string")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError("dispatch_policy_path must be absolute")
+    return path
 
 
 def normalize_public_origin(raw: Any) -> str | None:

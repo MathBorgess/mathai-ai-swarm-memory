@@ -780,10 +780,31 @@ def _publish(
     except Exception as exc:  # noqa: BLE001 - any transport error is a failed effect
         return STATUS_FAILED, None, f"{type(exc).__name__}: {exc}"[:500]
     if outcome.pull_request_url:
+        _maybe_apply_pr_autonomy(config, outcome.pull_request_url, lint_ok)
         return STATUS_COMPLETED, outcome.pull_request_url, outcome.detail
     if outcome.pushed:
         return STATUS_PENDING, None, outcome.detail
     return STATUS_PENDING, None, outcome.detail
+
+
+def _maybe_apply_pr_autonomy(config: ReportsConfig, pr_url: str, lint_ok: bool | None) -> None:
+    if config.dispatch_policy_path is None:
+        return
+    try:
+        from swarm_reports.dispatch.evening_autonomy import process_evening_pr
+        from swarm_reports.dispatch.gh_cli import GhCliTransport
+        from swarm_reports.dispatch.policy_config import load_dispatch_policy
+
+        policy = load_dispatch_policy(config.dispatch_policy_path)
+        process_evening_pr(
+            policy=policy,
+            state_dir=config.state_dir,
+            pr_url=pr_url,
+            lint_ok=lint_ok,
+            gh=GhCliTransport(),
+        )
+    except Exception:  # noqa: BLE001 - autonomy is best-effort; ledger already records the PR
+        return
 
 
 def _pull_request_body(day: date, revision: int, night, lint_ok: bool | None) -> str:
@@ -796,8 +817,8 @@ def _pull_request_body(day: date, revision: int, night, lint_ok: bool | None) ->
         f"Writeback da noite de {day.isoformat()} (revisão {revision}).\n\n"
         f"Arquivos: {', '.join(night.changed_paths)}\n"
         f"{lint_line}\n\n"
-        "Merge continua com o dono: a tabela de autonomia de merge só passa a valer "
-        "quando a política de F5 existir, então nada aqui é auto-mergeado.\n"
+        "## Decisões que merecem pergunta\n\n"
+        "(preenchido pelo mecanismo quando a política F5 está configurada)\n"
     )
 
 

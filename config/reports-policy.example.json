@@ -66,6 +66,11 @@
     "_models": "Only `agent --list-models` exists on the installed CLIs (2026-09-14). claude and codex are launched without --model, tabled as `default`.",
     "model_probe": { "cursor": true, "claude": false, "codex": false }
   },
+  "handoff": {
+    "_comment": "argv receives JSON on stdin {provider, model, task_id, prompt}. Omit command to record handoffs without launching a subprocess.",
+    "default_cost_pct": 5.0,
+    "command": null
+  },
   "digest": {
     "max_cards_per_pr": 3,
     "top_n": 5,

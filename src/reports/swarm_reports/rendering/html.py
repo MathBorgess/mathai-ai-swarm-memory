@@ -49,6 +49,9 @@ class MorningViewModel:
     done_task_ids: list[str] = field(default_factory=list)
     post_url: str | None = None
     revision_url: str | None = None
+    deferred_handoffs: list[tuple[str, str, str]] = field(default_factory=list)
+    digest_cards: list[dict[str, str]] = field(default_factory=list)
+    dispatch_note: str = ""
 
 
 def escape_html(text: str) -> str:
@@ -367,7 +370,9 @@ def render_morning_html(model: MorningViewModel) -> str:
 
     function bindAutosave(root) {{
       q("input, textarea, select", root).forEach(function(el) {{
-        el.addEventListener("change", function() {{ saveLocal(currentRevision, readForm()); }});
+        var persist = function() {{ saveLocal(currentRevision, readForm()); }};
+        el.addEventListener("input", persist);
+        el.addEventListener("change", persist);
       }});
     }}
 
@@ -493,6 +498,16 @@ def _panel_hoje(model: MorningViewModel) -> str:
         parts.append('<p class="muted">Nada registrado no ledger.</p>')
     if plan.discovery_placeholder:
         parts.append(f'<p class="muted">{escape_html(plan.discovery_placeholder)}</p>')
+    if model.deferred_handoffs:
+        parts.append('<p class="muted"><strong>Adiados (quota):</strong></p><ul>')
+        for task_id, title, reason in model.deferred_handoffs:
+            parts.append(
+                f"<li>{escape_html(title)} "
+                f'<span class="muted">({escape_html(task_id)}: {escape_html(reason)})</span></li>'
+            )
+        parts.append("</ul>")
+    if model.dispatch_note:
+        parts.append(f'<p class="muted">{escape_html(model.dispatch_note)}</p>')
     parts.append("</div>")
 
     p0 = plan.p0_items
@@ -561,7 +576,19 @@ def _panel_hoje(model: MorningViewModel) -> str:
 
 
 def _panel_revisar(model: MorningViewModel) -> str:
-    parts = ['<p class="muted">Digest de decisões (top 5) chega em F5.</p>']
+    parts: list[str] = []
+    if model.digest_cards:
+        parts.append('<div class="card"><h3>Decisões (top 5)</h3>')
+        for card in model.digest_cards[:5]:
+            parts.append(
+                f'<p><strong>{escape_html(card.get("kind", ""))}</strong> '
+                f'{escape_html(card.get("location", ""))}<br />'
+                f'{escape_html(card.get("question", ""))}<br />'
+                f'<span class="muted">{escape_html(card.get("why", ""))}</span></p>'
+            )
+        parts.append("</div>")
+    else:
+        parts.append('<p class="muted">Nenhum cartão de digest pendente.</p>')
     drafts = list(model.plan.review_drafts)
     if model.plan.optional_post_draft:
         drafts.append(model.plan.optional_post_draft)
