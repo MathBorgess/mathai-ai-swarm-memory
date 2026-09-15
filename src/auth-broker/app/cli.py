@@ -37,7 +37,10 @@ def _parser() -> argparse.ArgumentParser:
         prog="mathai-swarm",
         description="Administer swarm principals and grants in a local SQLite store.",
     )
-    parser.add_argument("--store", required=True, help="Absolute path to the broker SQLite file")
+    parser.add_argument(
+        "--store",
+        help="Absolute path to the broker SQLite file (required for admin commands)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     principal = sub.add_parser("principal", help="Register or list principals")
@@ -72,15 +75,41 @@ def _parser() -> argparse.ArgumentParser:
     token_sub = token.add_subparsers(dest="token_command", required=True)
     token_revoke = token_sub.add_parser("revoke", help="Revoke a refresh family immediately")
     token_revoke.add_argument("--family", required=True)
+
     return parser
 
 
+def _delegate_report(argv: list[str]) -> int:
+    try:
+        from swarm_reports.cli import main as reports_main
+    except ImportError:
+        print(
+            "error: mathai-swarm-reports is not installed. "
+            "Install both packages in the same venv, e.g.\n"
+            "  pip install -e src/auth-broker -e src/reports",
+            file=sys.stderr,
+        )
+        return 2
+    return reports_main(argv)
+
+
 def main(argv: list[str] | None = None, *, github_transport=None, now: datetime | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # `report` is handed to the reports CLI verbatim. Declaring the flags twice here
+    # only produced "unrecognized arguments" for the documented
+    # `mathai-swarm report morning --config /abs/reports.json`, because the broker
+    # parser owns neither `--config` nor the report subcommand's own options.
+    if raw and raw[0] == "report":
+        return _delegate_report(raw)
+
     parser = _parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0)
+    if not args.store:
+        print("error: --store is required for broker admin commands", file=sys.stderr)
+        return 2
     store_path = Path(args.store)
     if not store_path.is_absolute():
         print("error: --store must be an absolute path", file=sys.stderr)

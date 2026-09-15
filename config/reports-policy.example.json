@@ -1,0 +1,80 @@
+{
+  "_comment": "Example only. No real credentials here. Copy to reports-policy.json outside Git and point state_dir/config_path at it.",
+  "_state_dir": "Durable dispatch state (claims + quota ledger). Outside Git, 0700, on the VPS. Never in the vault.",
+  "state_dir": "/var/lib/mathai-reports/state",
+  "signal_max_age_hours": 6,
+  "repos": [
+    {
+      "repo": "MathBorgess/mathai-ai-swarm-memory",
+      "kind": "code",
+      "allowed_paths": ["src/reports/**", "skills/daily-plan/**", "skills/daily-review/**"],
+      "protected_paths": ["src/auth-broker/**", "src/hermes-identity/**"],
+      "skills_paths": ["skills/**"],
+      "is_tau_intent": false
+    },
+    {
+      "_comment": "kind=wiki turns on the vault tier table (mathai-wiki/CLAUDE.md § Tiers): T1 compiled pages need the owner, an edit to an existing fontes/ file is T0, a deletion is T0, navigation and working notes auto-merge on green lint.",
+      "repo": "MathBorgess/mathai-wiki",
+      "kind": "wiki",
+      "allowed_paths": [
+        "wiki/index.md",
+        "wiki/log.md",
+        "wiki/log-*.md",
+        "wiki/MOC/**",
+        "daily/**",
+        "estudos/**",
+        "pesquisa/**",
+        "brand/**"
+      ],
+      "protected_paths": ["wiki/principles/**", "scripts/**", ".github/**"],
+      "weights_paths": ["brand/metrics/res-weights.json"],
+      "is_tau_intent": false
+    },
+    {
+      "repo": "MathBorgess/tau-intent",
+      "kind": "code",
+      "allowed_paths": ["**"],
+      "protected_paths": [],
+      "is_tau_intent": true
+    }
+  ],
+  "tau_intent": {
+    "_comment": "The two-week hold runs from the day the OWNER activated the manual cycle, not from when a PR was opened. Leave activated_on null until that day is decided: a null blocks every tau-intent merge, which is the intended default.",
+    "activated_on": null,
+    "digest_proved": false,
+    "digest_evidence": ""
+  },
+  "quota": {
+    "low_threshold_pct": 20.0,
+    "stale_after_hours": 6,
+    "_estimated_daily_budget_pct": "Used ONLY for a provider whose probe reports no long window at all. There is no default: leave a provider out of this map and the dispatcher raises UnknownQuota instead of inventing a budget. Each entry must name who declared the number.",
+    "estimated_daily_budget_pct": {},
+    "_accounts": "Ledger key. Two CLIs on one subscription must share one account string, or each will spend a full daily budget (F0 §2.1: Claude Code, claude.ai and Desktop share a limit).",
+    "accounts": {
+      "claude": "owner@anthropic",
+      "codex": "owner@openai",
+      "cursor": "owner@cursor"
+    },
+    "_five_hour_reset_policy": "Default false: an expired resets_at means the snapshot is stale, not that the window refilled. Setting this true requires declared_by and still asks for a re-probe.",
+    "five_hour_reset_policy": {
+      "treat_expired_reset_as_refilled": false,
+      "declared_by": ""
+    }
+  },
+  "routing": {
+    "order": ["cursor", "claude", "codex"],
+    "_models": "Only `agent --list-models` exists on the installed CLIs (2026-09-14). claude and codex are launched without --model, tabled as `default`.",
+    "model_probe": { "cursor": true, "claude": false, "codex": false }
+  },
+  "handoff": {
+    "_comment": "argv receives JSON on stdin {provider, model, task_id, prompt}. Without command or providers the task is deferred, never reported as launched.",
+    "default_cost_pct": 5.0,
+    "command": null
+  },
+  "digest": {
+    "max_cards_per_pr": 3,
+    "top_n": 5,
+    "_external_comments": "false = a T0 suggestion is recorded as a local receipt for the ledger and nothing is posted to GitHub. Only the owner flips this.",
+    "allow_external_comments": false
+  }
+}
