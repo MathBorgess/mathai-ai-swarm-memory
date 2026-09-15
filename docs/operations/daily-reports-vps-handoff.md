@@ -2,7 +2,7 @@
 
 Documento operacional no repositório `MathBorgess/mathai-ai-swarm-memory`. Não substitui o runbook do broker A2A (`docs/operations/install-auth-broker-vps.md`). A cadeia F0–F6 foi consolidada em `main`; nada aqui é deploy automático: cron do ciclo diário permanece **desligado** nas duas semanas manuais.
 
-## Estado alvo (não confundir com `main`)
+## Estado integrado em `main`
 
 | Artefato | Estado integrado | Observação |
 |---|---|---|
