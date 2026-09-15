@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "canonical_wiki_path": "brand/metrics/res-weights.json",
+  "platforms": {
+    "linkedin": {
+      "signals": {
+        "reactions": 1,
+        "link_clicks": 2,
+        "profile_views": 3,
+        "comments": 4,
+        "reposts": 5,
+        "followers": 8
+      }
+    },
+    "instagram": {
+      "signals": {
+        "likes": 1,
+        "profile_visits": 3,
+        "comments": 4,
+        "saves": 4,
+        "shares": 5,
+        "followers": 8
+      }
+    }
+  }
+}

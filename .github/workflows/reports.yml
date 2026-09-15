@@ -1,0 +1,26 @@
+name: reports-metrics
+
+on:
+  push:
+    paths:
+      - "src/reports/**"
+      - ".github/workflows/reports.yml"
+  pull_request:
+    paths:
+      - "src/reports/**"
+      - ".github/workflows/reports.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        working-directory: src/reports
+        run: python -m pip install -e '.[dev]'
+      - name: Pytest
+        working-directory: src/reports
+        run: python -m pytest -q
